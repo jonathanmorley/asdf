@@ -1,15 +1,15 @@
+pub mod core;
 pub mod tool_version;
 
 use anyhow::{anyhow, Result};
 use dirs;
-use std::ascii::AsciiExt;
+use is_executable::IsExecutable;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::{fs, str};
 use which::which_in;
-use is_executable::IsExecutable;
 
 pub fn asdf_data_dir() -> Result<PathBuf> {
     env::var_os("ASDF_DATA_DIR")
@@ -105,8 +105,6 @@ pub fn list_installed_versions(plugin_name: &str) -> Result<Vec<String>> {
 pub fn find_file_upwards(name: &str) -> Result<Option<PathBuf>> {
     let mut search_path = env::current_dir()?;
     let file = Path::new(name);
-
-    dbg!(&search_path);
 
     loop {
         search_path.push(file);
@@ -281,7 +279,8 @@ pub fn call(command: &mut process::Command) -> Result<String> {
     let output = command.output()?;
 
     if output.status.success() {
-        String::from_utf8(output.stdout).map_err(Into::into)
+        let stdout = String::from_utf8(output.stdout)?;
+        Ok(String::from(stdout.trim_end()))
     } else {
         Err(anyhow!(
             "{}\n{}\n",
@@ -327,7 +326,7 @@ pub fn version_in_dir(
 
 #[derive(Debug, PartialEq)]
 pub struct VersionSpecifier {
-    version: String,
+    pub version: String,
     source: VersionSource,
 }
 
@@ -417,17 +416,22 @@ pub fn preset_version_for(plugin_name: &str) -> Result<String> {
 }
 
 pub fn preset_versions(shim_name: &str) -> Result<Vec<String>> {
-  shim_plugins(shim_name)?.into_iter().map(|plugin| preset_version_for(&plugin)).collect()
+    shim_plugins(shim_name)?
+        .into_iter()
+        .map(|plugin| preset_version_for(&plugin))
+        .collect()
 }
 
 pub fn select_from_preset_version(shim_name: &str) -> Result<Option<String>> {
-  let shim_versions = shim_versions(shim_name)?;
-  if !shim_versions.is_empty() {
-    let preset_versions = preset_versions(shim_name)?;
-    Ok(preset_versions.into_iter().find(|preset_version| preset_version.contains(&shim_versions.join(" "))))
-  } else {
-    Ok(None)
-  }
+    let shim_versions = shim_versions(shim_name)?;
+    if !shim_versions.is_empty() {
+        let preset_versions = preset_versions(shim_name)?;
+        Ok(preset_versions
+            .into_iter()
+            .find(|preset_version| preset_version.contains(&shim_versions.join(" "))))
+    } else {
+        Ok(None)
+    }
 }
 
 pub fn executable_path(
@@ -467,159 +471,167 @@ pub fn resolve_symlink(symlink: &Path) -> Result<PathBuf> {
 }
 
 pub fn shim_plugin_versions(executable: &str) -> Result<Vec<String>> {
-  let executable_path = PathBuf::from(executable);
-  let executable_name = executable_path.file_name().unwrap_or(&OsStr::new(executable));
-  let shim_path = shims_path()?.join(executable_name);
+    let executable_path = PathBuf::from(executable);
+    let executable_name = executable_path
+        .file_name()
+        .unwrap_or(&OsStr::new(executable));
+    let shim_path = shims_path()?.join(executable_name);
 
-  if shim_path.is_executable() {
-    Ok(fs::read_to_string(shim_path)?
-      .lines()
-      .filter(|line| line.starts_with("# asdf-plugin: "))
-      .map(|line| line[15..].to_string())
-      .collect())
-  } else {
-    Err(anyhow!("asdf: unknown shim {:?}", executable_name))
-  }
+    if shim_path.is_executable() {
+        Ok(fs::read_to_string(shim_path)?
+            .lines()
+            .filter(|line| line.starts_with("# asdf-plugin: "))
+            .map(|line| line[15..].to_string())
+            .collect())
+    } else {
+        Err(anyhow!("asdf: unknown shim {:?}", executable_name))
+    }
 }
 
 pub fn shim_plugins(executable: &str) -> Result<Vec<String>> {
-  Ok(shim_plugin_versions(executable)?
-      .into_iter()
-      .map(|version| version.split(' ').next().unwrap().to_string())
-      .collect())
+    Ok(shim_plugin_versions(executable)?
+        .into_iter()
+        .map(|version| version.split(' ').next().unwrap().to_string())
+        .collect())
 }
 
 pub fn shim_versions(shim_name: &str) -> Result<Vec<String>> {
-  let mut versions = shim_plugin_versions(shim_name)?;
-  let mut system_versions = versions.clone().into_iter().map(|version| format!("{} system", version.split(' ').next().unwrap())).collect();
-  versions.append(&mut system_versions);
+    let mut versions = shim_plugin_versions(shim_name)?;
+    let mut system_versions = versions
+        .clone()
+        .into_iter()
+        .map(|version| format!("{} system", version.split(' ').next().unwrap()))
+        .collect();
+    versions.append(&mut system_versions);
 
-  Ok(versions)
+    Ok(versions)
 }
 
 pub fn select_version(shim_name: &str) -> Result<Option<String>> {
-  // First, we get the all the plugins where the
-  // current shim is available.
-  // Then, we iterate on all versions set for each plugin
-  // Note that multiple plugin versions can be set for a single plugin.
-  // These are separated by a space. e.g. python 3.7.2 2.7.15
-  // For each plugin/version pair, we check if it is present in the shim
-  let search_path = env::current_dir()?;
-  let shim_versions = shim_versions(shim_name)?;
-  let plugins = shim_plugins(shim_name)?;
+    // First, we get the all the plugins where the
+    // current shim is available.
+    // Then, we iterate on all versions set for each plugin
+    // Note that multiple plugin versions can be set for a single plugin.
+    // These are separated by a space. e.g. python 3.7.2 2.7.15
+    // For each plugin/version pair, we check if it is present in the shim
+    let search_path = env::current_dir()?;
+    let shim_versions = shim_versions(shim_name)?;
+    let plugins = shim_plugins(shim_name)?;
 
-  for plugin_name in plugins {
-    let version = find_versions(&plugin_name, &search_path)?.version;
-    let usable_plugin_versions = version.split(' ').collect::<Vec<_>>();
-    for plugin_version in usable_plugin_versions {
-      for plugin_and_version in &shim_versions {
-        let splitted = plugin_and_version.split(' ').collect::<Vec<_>>();
-        let (plugin_shim_name, plugin_shim_version) = (splitted[0], splitted[1]);
+    for plugin_name in plugins {
+        let version = find_versions(&plugin_name, &search_path)?.version;
+        let usable_plugin_versions = version.split(' ').collect::<Vec<_>>();
+        for plugin_version in usable_plugin_versions {
+            for plugin_and_version in &shim_versions {
+                let splitted = plugin_and_version.split(' ').collect::<Vec<_>>();
+                let (plugin_shim_name, plugin_shim_version) = (splitted[0], splitted[1]);
 
-        if plugin_name == plugin_shim_name {
-          if plugin_version == plugin_shim_version || plugin_version.starts_with("path:") {
-            return Ok(Some(format!("{} {}", plugin_name, plugin_version)))
-          }
+                if plugin_name == plugin_shim_name {
+                    if plugin_version == plugin_shim_version || plugin_version.starts_with("path:")
+                    {
+                        return Ok(Some(format!("{} {}", plugin_name, plugin_version)));
+                    }
+                }
+            }
         }
-      }
     }
-  }
 
-  Ok(None)
+    Ok(None)
 }
 
 pub fn with_shim_executable(shim: &Path, shim_exec: &str) -> Result<()> {
-  let shim_name = shim.file_name().unwrap_or(shim.as_os_str());
-  let shim_path = shims_path()?.join(&shim_name);
+    let shim_name = shim.file_name().unwrap_or(shim.as_os_str());
+    let shim_path = shims_path()?.join(&shim_name);
 
-  if !shim_path.is_file() {
-    return Err(anyhow!("unknown command: {:?}. Perhaps you have to reshim?", shim_name));
-  }
+    if !shim_path.is_file() {
+        return Err(anyhow!(
+            "unknown command: {:?}. Perhaps you have to reshim?",
+            shim_name
+        ));
+    }
 
-  let selected_version = select_version(&shim_name.to_str().unwrap())?.or_else(|| {
-    select_from_preset_version(shim_name.to_str().unwrap()).unwrap()
-  });
+    let selected_version = select_version(&shim_name.to_str().unwrap())?
+        .or_else(|| select_from_preset_version(shim_name.to_str().unwrap()).unwrap());
 
-  Ok(())
+    Ok(())
 
-  // local shim_name
-  // shim_name=$(basename "$1")
-  // local shim_exec="${2}"
+    // local shim_name
+    // shim_name=$(basename "$1")
+    // local shim_exec="${2}"
 
-  // if [ ! -f "$(asdf_data_dir)/shims/${shim_name}" ]; then
-  //   printf "%s %s %s\\n" "unknown command:" "${shim_name}." "" >&2
-  //   return 1
-  // fi
+    // if [ ! -f "$(asdf_data_dir)/shims/${shim_name}" ]; then
+    //   printf "%s %s %s\\n" "unknown command:" "${shim_name}." "" >&2
+    //   return 1
+    // fi
 
-  // local selected_version
-  // selected_version="$(select_version "$shim_name")"
+    // local selected_version
+    // selected_version="$(select_version "$shim_name")"
 
-  // if [ -z "$selected_version" ]; then
-  //   selected_version="$(select_from_preset_version "$shim_name")"
-  // fi
+    // if [ -z "$selected_version" ]; then
+    //   selected_version="$(select_from_preset_version "$shim_name")"
+    // fi
 
-  // if [ -n "$selected_version" ]; then
-  //   local plugin_name
-  //   local full_version
-  //   local plugin_path
+    // if [ -n "$selected_version" ]; then
+    //   local plugin_name
+    //   local full_version
+    //   local plugin_path
 
-  //   IFS=' ' read -r plugin_name full_version <<<"$selected_version"
-  //   plugin_path=$(get_plugin_path "$plugin_name")
+    //   IFS=' ' read -r plugin_name full_version <<<"$selected_version"
+    //   plugin_path=$(get_plugin_path "$plugin_name")
 
-  //   run_within_env() {
-  //     local path
-  //     path=$(sed -e "s|$(asdf_data_dir)/shims||g; s|::|:|g" <<<"$PATH")
+    //   run_within_env() {
+    //     local path
+    //     path=$(sed -e "s|$(asdf_data_dir)/shims||g; s|::|:|g" <<<"$PATH")
 
-  //     executable_path=$(PATH=$path command -v "$shim_name")
+    //     executable_path=$(PATH=$path command -v "$shim_name")
 
-  //     if [ -x "${plugin_path}/bin/exec-path" ]; then
-  //       install_path=$(find_install_path "$plugin_name" "$full_version")
-  //       executable_path=$(get_custom_executable_path "${plugin_path}" "${install_path}" "${executable_path:-${shim_name}}")
-  //     fi
+    //     if [ -x "${plugin_path}/bin/exec-path" ]; then
+    //       install_path=$(find_install_path "$plugin_name" "$full_version")
+    //       executable_path=$(get_custom_executable_path "${plugin_path}" "${install_path}" "${executable_path:-${shim_name}}")
+    //     fi
 
-  //     "$shim_exec" "$plugin_name" "$full_version" "$executable_path"
-  //   }
+    //     "$shim_exec" "$plugin_name" "$full_version" "$executable_path"
+    //   }
 
-  //   with_plugin_env "$plugin_name" "$full_version" run_within_env
-  //   return $?
-  // fi
+    //   with_plugin_env "$plugin_name" "$full_version" run_within_env
+    //   return $?
+    // fi
 
-  // (
-  //   local preset_plugin_versions
-  //   preset_plugin_versions=()
-  //   local closest_tool_version
-  //   closest_tool_version=$(find_tool_versions)
+    // (
+    //   local preset_plugin_versions
+    //   preset_plugin_versions=()
+    //   local closest_tool_version
+    //   closest_tool_version=$(find_tool_versions)
 
-  //   local shim_plugins
-  //   IFS=$'\n' read -rd '' -a shim_plugins <<<"$(shim_plugins "$shim_name")"
-  //   for shim_plugin in "${shim_plugins[@]}"; do
-  //     local shim_versions
-  //     local version_string
-  //     version_string=$(get_preset_version_for "$shim_plugin")
-  //     IFS=' ' read -r -a shim_versions <<<"$version_string"
-  //     local usable_plugin_versions
-  //     for shim_version in "${shim_versions[@]}"; do
-  //       preset_plugin_versions+=("$shim_plugin $shim_version")
-  //     done
-  //   done
+    //   local shim_plugins
+    //   IFS=$'\n' read -rd '' -a shim_plugins <<<"$(shim_plugins "$shim_name")"
+    //   for shim_plugin in "${shim_plugins[@]}"; do
+    //     local shim_versions
+    //     local version_string
+    //     version_string=$(get_preset_version_for "$shim_plugin")
+    //     IFS=' ' read -r -a shim_versions <<<"$version_string"
+    //     local usable_plugin_versions
+    //     for shim_version in "${shim_versions[@]}"; do
+    //       preset_plugin_versions+=("$shim_plugin $shim_version")
+    //     done
+    //   done
 
-  //   if [ -n "${preset_plugin_versions[*]}" ]; then
-  //     printf "%s %s\\n" "No preset version installed for command" "$shim_name"
-  //     printf "%s\\n\\n" "Please install a version by running one of the following:"
-  //     for preset_plugin_version in "${preset_plugin_versions[@]}"; do
-  //       printf "%s %s\\n" "asdf install" "$preset_plugin_version"
-  //     done
-  //     printf "\\n%s %s\\n" "or add one of the following versions in your config file at" "$closest_tool_version"
-  //   else
-  //     printf "%s %s\\n" "No version set for command" "$shim_name"
-  //     printf "%s %s\\n" "Consider adding one of the following versions in your config file at" "$closest_tool_version"
-  //   fi
-  //   shim_plugin_versions "${shim_name}"
-  // ) >&2
+    //   if [ -n "${preset_plugin_versions[*]}" ]; then
+    //     printf "%s %s\\n" "No preset version installed for command" "$shim_name"
+    //     printf "%s\\n\\n" "Please install a version by running one of the following:"
+    //     for preset_plugin_version in "${preset_plugin_versions[@]}"; do
+    //       printf "%s %s\\n" "asdf install" "$preset_plugin_version"
+    //     done
+    //     printf "\\n%s %s\\n" "or add one of the following versions in your config file at" "$closest_tool_version"
+    //   else
+    //     printf "%s %s\\n" "No version set for command" "$shim_name"
+    //     printf "%s %s\\n" "Consider adding one of the following versions in your config file at" "$closest_tool_version"
+    //   fi
+    //   shim_plugin_versions "${shim_name}"
+    // ) >&2
 
-  // return 126
+    // return 126
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1731,12 +1743,16 @@ mod tests {
     fn list_installed_plugins() -> Result<()> {
         let context = setup()?;
         for plugin in &["mock_plugin_2", "mock_plugin_1"] {
-          install_mock_plugin(plugin, &context.home_dir.path().join(".asdf"))?;
+            install_mock_plugin(plugin, &context.home_dir.path().join(".asdf"))?;
         }
 
         assert_eq!(
             super::list_installed_plugins()?,
-            vec![String::from("dummy"), String::from("mock_plugin_1"), String::from("mock_plugin_2")]
+            vec![
+                String::from("dummy"),
+                String::from("mock_plugin_1"),
+                String::from("mock_plugin_2")
+            ]
         );
 
         Ok(())

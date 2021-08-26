@@ -1,18 +1,21 @@
 macro_rules! bats_test {
-  ($x:ident) => {
-      #[test]
-      fn $x() {
-          assert!(std::process::Command::new("bats")
-            .arg(format!("test/{}.bats", stringify!($x)))
-            .spawn()
-            .unwrap()
-            .wait()
-            .unwrap()
-            .success()
-          );
-      }
-  };
+    ($x:ident) => {
+        #[test]
+        fn $x() {
+            assert!(std::process::Command::new("bats")
+                .arg(format!("test/{}.bats", stringify!($x)))
+                .env("CARGO_BIN_EXE_asdf", env!("CARGO_BIN_EXE_asdf"))
+                .spawn()
+                .unwrap()
+                .wait()
+                .unwrap()
+                .success());
+            assert!(false);
+        }
+    };
 }
+
+// Use `cargo build && bats test/<file> --filter <regex>` to run individual test cases
 
 // Fails without fish
 //bats_test!(asdf_fish);

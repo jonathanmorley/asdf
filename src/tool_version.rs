@@ -2,10 +2,12 @@ use std::{fs, path::PathBuf, str::FromStr};
 
 use anyhow::{anyhow, Error, Result};
 
+use crate::core::latest::get_latest_version;
 use crate::installs_path;
 
 #[derive(Debug)]
 pub enum ToolVersion {
+    Latest(Option<String>),
     Version(String),
     Path(PathBuf),
     Ref(String),
@@ -20,6 +22,10 @@ impl FromStr for ToolVersion {
         } else {
             if s.starts_with("ref:") {
                 Ok(ToolVersion::Ref(s[4..].to_owned()))
+            } else if s.eq("latest") {
+                Ok(ToolVersion::Latest(None))
+            } else if s.starts_with("latest:") {
+                Ok(ToolVersion::Latest(Some(s[7..].to_owned())))
             } else {
                 Ok(ToolVersion::Version(s.to_owned()))
             }
@@ -30,18 +36,21 @@ impl FromStr for ToolVersion {
 impl ToolVersion {
     pub fn install_type(&self) -> String {
         match self {
+            &ToolVersion::Latest(_) => "version".to_string(),
             ToolVersion::Version(_) => "version".to_string(),
             ToolVersion::Path(_) => "path".to_string(),
             ToolVersion::Ref(_) => "ref".to_string(),
         }
     }
 
-    pub fn install_version(&self) -> Option<String> {
+    pub fn install_version(&self, plugin_name: &str) -> Result<Option<String>> {
         match self {
-            // TODO: If latest, get latest
-            ToolVersion::Version(version) => Some(version.to_string()),
-            ToolVersion::Path(_) => None,
-            ToolVersion::Ref(version) => Some(version.to_string()),
+            ToolVersion::Latest(version) => {
+                get_latest_version(plugin_name, version.as_deref().unwrap_or_default()).map(Some)
+            }
+            ToolVersion::Version(version) => Ok(Some(version.to_string())),
+            ToolVersion::Path(_) => Ok(None),
+            ToolVersion::Ref(version) => Ok(Some(version.to_string())),
         }
     }
 
@@ -50,6 +59,8 @@ impl ToolVersion {
         fs::create_dir_all(&plugin_dir)?;
 
         Ok(match self {
+            ToolVersion::Latest(None) => plugin_dir.join("latest"),
+            ToolVersion::Latest(Some(version)) => plugin_dir.join(version),
             ToolVersion::Version(version) => plugin_dir.join(version),
             ToolVersion::Path(path) => path.to_owned(),
             ToolVersion::Ref(version) => plugin_dir.join(format!("ref-{}", version)),

@@ -4,8 +4,10 @@
 # tests fail when it is set to something other than the temp dir.
 unset ASDF_DIR
 
-# shellcheck source=lib/utils.bash
-#. "$(dirname "$BATS_TEST_DIRNAME")"/lib/utils.bash
+#if [ -z "${CARGO_BIN_EXE_asdf}" ]; then
+  # shellcheck source=lib/utils.bash
+  #. "$(dirname "$BATS_TEST_DIRNAME")"/lib/utils.bash
+#fi
 
 setup_asdf_dir() {
   if [ -n "${ASDF_BATS_SPACE_IN_PATH:-}" ]; then
@@ -19,7 +21,12 @@ setup_asdf_dir() {
   mkdir -p "$ASDF_DIR/installs"
   mkdir -p "$ASDF_DIR/shims"
   mkdir -p "$ASDF_DIR/tmp"
-  ASDF_BIN="$(dirname "$BATS_TEST_DIRNAME")/target/debug"
+
+  if [ -z "${CARGO_BIN_EXE_asdf}" ]; then
+    ASDF_BIN="$(dirname "$BATS_TEST_DIRNAME")/target/debug"
+  else
+    ASDF_BIN="$(dirname "$CARGO_BIN_EXE_asdf")"
+  fi
 
   # shellcheck disable=SC2031
   PATH="$ASDF_BIN:$ASDF_DIR/shims:$PATH"
@@ -59,7 +66,7 @@ install_mock_plugin_version() {
   local plugin_version=$2
   local location="${3:-$ASDF_DIR}"
   mkdir -p "$location/installs/$plugin_name/$plugin_version"
-} 
+}
 
 install_dummy_plugin() {
   install_mock_plugin "dummy"

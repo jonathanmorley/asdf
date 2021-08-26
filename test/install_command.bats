@@ -245,6 +245,7 @@ EOM
 
 @test "install_command latest installs latest stable version" {
   run asdf install dummy latest
+  echo $output
   [ "$status" -eq 0 ]
   [ $(cat $ASDF_DIR/installs/dummy/2.0.0/version) = "2.0.0" ]
 }
