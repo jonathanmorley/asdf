@@ -38,6 +38,7 @@ teardown() {
 
   run rm "$ASDF_DIR/installs/dummy/1.0/bin/dummy"
   run asdf reshim dummy
+  echo $output
   [ "$status" -eq 0 ]
   [ ! -f "$ASDF_DIR/shims/dummy" ]
 }
@@ -51,6 +52,7 @@ teardown() {
   [ "$status" -eq 0 ]
   [ -f "$ASDF_DIR/shims/dummy" ]
   run grep "asdf-plugin: dummy 1.0" "$ASDF_DIR/shims/dummy"
+  echo $output
   [ "$status" -eq 1 ]
   run grep "asdf-plugin: dummy 1.1" "$ASDF_DIR/shims/dummy"
   [ "$status" -eq 0 ]

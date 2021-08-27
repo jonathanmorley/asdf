@@ -4,19 +4,260 @@ pub mod tool_version;
 use anyhow::{anyhow, Result};
 use dirs;
 use is_executable::IsExecutable;
+use tool_version::ToolVersion;
+use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
+use std::fs::DirEntry;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::{fs, str};
 use which::which_in;
 
+#[derive(Debug, PartialEq)]
+pub struct VersionSpecifier {
+    pub version: String,
+    source: VersionSource,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum VersionSource {
+    ToolVersion(PathBuf),
+    Legacy(PathBuf),
+    EnvVar(String),
+}
+
+// asdf_version
+// asdf_dir
+// asdf_repository_url
+
+// asdf_data_dir
 pub fn asdf_data_dir() -> Result<PathBuf> {
     env::var_os("ASDF_DATA_DIR")
         .map(Into::into)
         .or_else(|| dirs::home_dir().map(|home| home.join(".asdf")))
         .ok_or_else(|| anyhow!("Cannot find asdf data directory"))
 }
+
+// get_install_path
+pub fn install_path(plugin_name: &str, install_type: &str, version: &str) -> Result<PathBuf> {
+  let plugin_dir = plugin_installs_path(plugin_name)?;
+  fs::create_dir_all(&plugin_dir)?;
+
+  Ok(match install_type {
+      "version" => plugin_dir.join(version),
+      "path" => PathBuf::from(version),
+      other => plugin_dir.join(format!("{}-{}", other, version)),
+  })
+}
+
+// get_download_path
+pub fn download_path(
+  plugin_name: &str,
+  install_type: &str,
+  version: &str,
+) -> Result<Option<PathBuf>> {
+  let downloads_path = plugin_downloads_path(plugin_name)?;
+  fs::create_dir_all(&downloads_path)?;
+
+  Ok(match install_type {
+      "version" => Some(downloads_path.join(version)),
+      "path" => None,
+      other => Some(downloads_path.join(format!("{}-{}", other, version))),
+  })
+}
+
+// list_installed_versions
+pub fn list_installed_versions(plugin_name: &str) -> Result<Vec<String>> {
+  let plugin_installs_path = plugin_installs_path(plugin_name)?;
+
+  if plugin_installs_path.is_dir() {
+      let mut versions = fs::read_dir(plugin_installs_path)?
+          .map(|result| {
+              result.map_err(Into::into).and_then(|entry| {
+                  entry
+                      .file_name()
+                      .into_string()
+                      .map(|version| version.replace("^ref-", "ref:"))
+                      .map_err(|_| anyhow!("Cannot parse filename as unicode"))
+              })
+          })
+          .collect::<Result<Vec<_>>>()?;
+      versions.sort();
+
+      Ok(versions)
+  } else {
+      Ok(vec![])
+  }
+}
+
+// check_if_plugin_exists
+pub fn plugin_exists(plugin_name: &str) -> Result<()> {
+  if plugin_name.is_empty() {
+      Err(anyhow!("No plugin given"))
+  } else {
+      if !plugin_path(plugin_name)?.is_dir() {
+          Err(anyhow!("No such plugin: {}", plugin_name))
+      } else {
+          Ok(())
+      }
+  }
+}
+
+// check_if_version_exists
+pub fn version_exists(plugin_name: &str, version: &str) -> Result<()> {
+  plugin_exists(plugin_name)?;
+
+  if let Some(install_path) = find_install_path(plugin_name, version)? {
+      if !install_path.is_dir() {
+          return Err(anyhow!(""));
+      }
+  }
+
+  Ok(())
+}
+
+// version_not_installed_text
+
+// get_plugin_path
+pub fn plugin_path(plugin_name: &str) -> Result<PathBuf> {
+  Ok(plugins_path()?.join(plugin_name))
+}
+
+// display_error
+
+// get_version_in_dir
+pub fn version_in_dir(
+  plugin_name: &str,
+  search_path: &Path,
+  legacy_filenames: &[PathBuf],
+) -> Result<Option<VersionSpecifier>> {
+  let tool_versions_path = search_path.join(".tool-versions");
+  let asdf_version = parse_asdf_version_file(&tool_versions_path, plugin_name)?;
+
+  if let Some(asdf_version) = asdf_version {
+      return Ok(Some(VersionSpecifier {
+          version: asdf_version,
+          source: VersionSource::ToolVersion(tool_versions_path),
+      }));
+  }
+
+  for legacy_filename in legacy_filenames {
+      let legacy_file_path = search_path.join(legacy_filename);
+      let legacy_version = parse_legacy_version_file(&legacy_file_path, plugin_name)?;
+
+      if let Some(legacy_version) = legacy_version {
+          return Ok(Some(VersionSpecifier {
+              version: legacy_version,
+              source: VersionSource::Legacy(legacy_file_path),
+          }));
+      }
+  }
+
+  Ok(None)
+}
+
+// find_versions
+pub fn find_versions(plugin_name: &str, search_path: &Path) -> Result<Option<VersionSpecifier>> {
+  let version = version_from_env(plugin_name)?;
+
+  if let Some(version) = version {
+      return Ok(Some(VersionSpecifier {
+          version,
+          source: VersionSource::EnvVar(env_var_for_plugin(plugin_name)),
+      }));
+  }
+
+  let legacy_config = asdf_config_value("legacy_version_file")?;
+  let legacy_list_filenames_script = plugin_path(plugin_name)?
+      .join("bin")
+      .join("list-legacy-filenames");
+
+  let legacy_filenames: Vec<PathBuf> =
+      if Some(String::from("yes")) == legacy_config && legacy_list_filenames_script.is_file() {
+          call(&mut process::Command::new(&legacy_list_filenames_script))?
+              .split_whitespace()
+              .map(Into::into)
+              .collect()
+      } else {
+          vec![]
+      };
+
+  let mut current_path = Some(search_path);
+  while let Some(path) = current_path {
+      if let Some(version) = version_in_dir(plugin_name, path, &legacy_filenames)? {
+          return Ok(Some(version));
+      } else {
+          current_path = path.parent();
+      }
+  }
+
+  if let Some(home) = dirs::home_dir() {
+      if let Some(version) = version_in_dir(plugin_name, &home, &legacy_filenames)? {
+          return Ok(Some(version));
+      }
+  }
+
+  if let Some(asdf_default_tool_versions_filename) =
+      env::var_os("ASDF_DEFAULT_TOOL_VERSIONS_FILENAME")
+  {
+      let asdf_default_tool_versions_path = PathBuf::from(asdf_default_tool_versions_filename);
+
+      if asdf_default_tool_versions_path.is_file() {
+          let versions = parse_asdf_version_file(&asdf_default_tool_versions_path, plugin_name)?;
+
+          if let Some(versions) = versions {
+              return Ok(Some(VersionSpecifier {
+                  version: versions,
+                  source: VersionSource::ToolVersion(asdf_default_tool_versions_path),
+              }));
+          }
+      }
+  }
+
+  Ok(None)
+}
+
+// display_no_version_set
+
+// get_version_from_env
+fn version_from_env(plugin_name: &str) -> Result<Option<String>> {
+  let version_env_var = env_var_for_plugin(plugin_name);
+
+  env::var_os(&version_env_var)
+      .map(OsString::into_string)
+      .transpose()
+      .map_err(|_| anyhow!("Cannot parse env var: {} as unicode", version_env_var))
+}
+
+// find_install_path
+pub fn find_install_path(plugin_name: &str, version: &str) -> Result<Option<PathBuf>> {
+  if version == "system" {
+      Ok(None)
+  } else {
+      let split = version.splitn(2, ':').collect::<Vec<_>>();
+
+      match split.len() {
+          1 => install_path(plugin_name, "version", version).map(Some),
+          2 => {
+              let (version_type, version) = (split[0], split[1]);
+
+              match version_type {
+                  "ref" => install_path(plugin_name, "ref", &version).map(Some),
+                  // This is for people who have the local source already compiled
+                  // Like those who work on the language, etc
+                  // We'll allow specifying path:/foo/bar/project in .tool-versions
+                  // And then use the binaries there
+                  "path" => Ok(Some(PathBuf::from(version))),
+                  _ => install_path(plugin_name, "version", version).map(Some),
+              }
+          }
+          _ => Err(anyhow!("Unknown version specifier: {}", version)),
+      }
+  }
+}
+
+// get_custom_executable_path
 
 pub fn asdf_config_file() -> Result<PathBuf> {
     env::var_os("ASDF_CONFIG_FILE")
@@ -33,27 +274,12 @@ pub fn plugins_path() -> Result<PathBuf> {
     Ok(asdf_data_dir()?.join("plugins"))
 }
 
-pub fn plugin_path(plugin_name: &str) -> Result<PathBuf> {
-    Ok(plugins_path()?.join(plugin_name))
-}
-
 pub fn installs_path() -> Result<PathBuf> {
     Ok(asdf_data_dir()?.join("installs"))
 }
 
 pub fn plugin_installs_path(plugin_name: &str) -> Result<PathBuf> {
     Ok(installs_path()?.join(plugin_name))
-}
-
-pub fn install_path(plugin_name: &str, install_type: &str, version: &str) -> Result<PathBuf> {
-    let plugin_dir = plugin_installs_path(plugin_name)?;
-    fs::create_dir_all(&plugin_dir)?;
-
-    Ok(match install_type {
-        "version" => plugin_dir.join(version),
-        "path" => PathBuf::from(version),
-        other => plugin_dir.join(format!("{}-{}", other, version)),
-    })
 }
 
 pub fn downloads_path() -> Result<PathBuf> {
@@ -64,110 +290,19 @@ pub fn plugin_downloads_path(plugin_name: &str) -> Result<PathBuf> {
     Ok(downloads_path()?.join(plugin_name))
 }
 
-pub fn download_path(
-    plugin_name: &str,
-    install_type: &str,
-    version: &str,
-) -> Result<Option<PathBuf>> {
-    let downloads_path = plugin_downloads_path(plugin_name)?;
-    fs::create_dir_all(&downloads_path)?;
-
-    Ok(match install_type {
-        "version" => Some(downloads_path.join(version)),
-        "path" => None,
-        other => Some(downloads_path.join(format!("{}-{}", other, version))),
-    })
-}
-
-pub fn list_installed_versions(plugin_name: &str) -> Result<Vec<String>> {
-    let plugin_installs_path = plugin_installs_path(plugin_name)?;
-
-    if plugin_installs_path.is_dir() {
-        let mut versions = fs::read_dir(plugin_installs_path)?
-            .map(|result| {
-                result.map_err(Into::into).and_then(|entry| {
-                    entry
-                        .file_name()
-                        .into_string()
-                        .map(|version| version.replace("^ref-", "ref:"))
-                        .map_err(|_| anyhow!("Cannot parse filename as unicode"))
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        versions.sort();
-
-        Ok(versions)
-    } else {
-        Ok(vec![])
-    }
-}
-
 pub fn find_file_upwards(name: &str) -> Result<Option<PathBuf>> {
-    let mut search_path = env::current_dir()?;
-    let file = Path::new(name);
+    let cwd = env::current_dir()?;
+    let mut search_path = Some(cwd.as_path());
 
-    loop {
-        search_path.push(file);
-
-        if search_path.is_file() {
-            break Ok(Some(search_path));
+    while let Some(path) = search_path {
+        if path.join(name).is_file() {
+            return Ok(Some(path.join(name)));
         }
 
-        if !(search_path.pop() && search_path.pop()) {
-            // remove file && remove parent
-            break Ok(None);
-        }
-    }
-}
-
-pub fn find_install_path(plugin_name: &str, version: &str) -> Result<Option<PathBuf>> {
-    if version == "system" {
-        Ok(None)
-    } else {
-        let split = version.splitn(2, ':').collect::<Vec<_>>();
-
-        match split.len() {
-            1 => install_path(plugin_name, "version", version).map(Some),
-            2 => {
-                let (version_type, version) = (split[0], split[1]);
-
-                match version_type {
-                    "ref" => install_path(plugin_name, "ref", &version).map(Some),
-                    // This is for people who have the local source already compiled
-                    // Like those who work on the language, etc
-                    // We'll allow specifying path:/foo/bar/project in .tool-versions
-                    // And then use the binaries there
-                    "path" => Ok(Some(PathBuf::from(version))),
-                    _ => install_path(plugin_name, "version", version).map(Some),
-                }
-            }
-            _ => Err(anyhow!("Unknown version specifier: {}", version)),
-        }
-    }
-}
-
-pub fn plugin_exists(plugin_name: &str) -> Result<()> {
-    if plugin_name.is_empty() {
-        Err(anyhow!("No plugin given"))
-    } else {
-        if !plugin_path(plugin_name)?.is_dir() {
-            Err(anyhow!("No such plugin: {}", plugin_name))
-        } else {
-            Ok(())
-        }
-    }
-}
-
-pub fn version_exists(plugin_name: &str, version: &str) -> Result<()> {
-    plugin_exists(plugin_name)?;
-
-    if let Some(install_path) = find_install_path(plugin_name, version)? {
-        if !install_path.is_dir() {
-            return Err(anyhow!(""));
-        }
+        search_path = path.parent();
     }
 
-    Ok(())
+    Ok(None)
 }
 
 pub fn list_installed_plugins() -> Result<Vec<String>> {
@@ -294,131 +429,18 @@ pub fn version_not_installed_text(plugin_name: &str, version: &str) -> String {
     format!("version {} is not installed for {}", version, plugin_name)
 }
 
-pub fn version_in_dir(
-    plugin_name: &str,
-    search_path: &Path,
-    legacy_filenames: &[PathBuf],
-) -> Result<Option<VersionSpecifier>> {
-    let tool_versions_path = search_path.join(".tool-versions");
-    let asdf_version = parse_asdf_version_file(&tool_versions_path, plugin_name)?;
-
-    if let Some(asdf_version) = asdf_version {
-        return Ok(Some(VersionSpecifier {
-            version: asdf_version,
-            source: VersionSource::ToolVersion(tool_versions_path),
-        }));
-    }
-
-    for legacy_filename in legacy_filenames {
-        let legacy_file_path = search_path.join(legacy_filename);
-        let legacy_version = parse_legacy_version_file(&legacy_file_path, plugin_name)?;
-
-        if let Some(legacy_version) = legacy_version {
-            return Ok(Some(VersionSpecifier {
-                version: legacy_version,
-                source: VersionSource::Legacy(legacy_file_path),
-            }));
-        }
-    }
-
-    Ok(None)
-}
-
-#[derive(Debug, PartialEq)]
-pub struct VersionSpecifier {
-    pub version: String,
-    source: VersionSource,
-}
-
-#[derive(Debug, PartialEq)]
-pub enum VersionSource {
-    ToolVersion(PathBuf),
-    Legacy(PathBuf),
-    EnvVar(String),
-}
-
-pub fn find_versions(plugin_name: &str, search_path: &Path) -> Result<VersionSpecifier> {
-    let version = version_from_env(plugin_name)?;
-
-    if let Some(version) = version {
-        return Ok(VersionSpecifier {
-            version,
-            source: VersionSource::EnvVar(env_var_for_plugin(plugin_name)),
-        });
-    }
-
-    let legacy_config = asdf_config_value("legacy_version_file")?;
-    let legacy_list_filenames_script = plugin_path(plugin_name)?
-        .join("bin")
-        .join("list-legacy-filenames");
-
-    let legacy_filenames: Vec<PathBuf> =
-        if Some(String::from("yes")) == legacy_config && legacy_list_filenames_script.is_file() {
-            call(&mut process::Command::new(&legacy_list_filenames_script))?
-                .split_whitespace()
-                .map(Into::into)
-                .collect()
-        } else {
-            vec![]
-        };
-
-    let mut current_path = Some(search_path);
-    while let Some(path) = current_path {
-        let version = version_in_dir(plugin_name, path, &legacy_filenames)?;
-        if let Some(version) = version {
-            return Ok(version);
-        }
-
-        current_path = path.parent();
-    }
-
-    if let Some(home) = dirs::home_dir() {
-        if let Some(version) = version_in_dir(plugin_name, &home, &legacy_filenames)? {
-            return Ok(version);
-        }
-    }
-
-    if let Some(asdf_default_tool_versions_filename) =
-        env::var_os("ASDF_DEFAULT_TOOL_VERSIONS_FILENAME")
-    {
-        let asdf_default_tool_versions_path = PathBuf::from(asdf_default_tool_versions_filename);
-
-        if asdf_default_tool_versions_path.is_file() {
-            let versions = parse_asdf_version_file(&asdf_default_tool_versions_path, plugin_name)?;
-
-            if let Some(versions) = versions {
-                return Ok(VersionSpecifier {
-                    version: versions,
-                    source: VersionSource::ToolVersion(asdf_default_tool_versions_path),
-                });
-            }
-        }
-    }
-
-    Err(anyhow!("No versions found"))
-}
-
 fn env_var_for_plugin(plugin_name: &str) -> String {
     format!("ASDF_{}_VERSION", plugin_name.to_uppercase())
 }
 
-fn version_from_env(plugin_name: &str) -> Result<Option<String>> {
-    let version_env_var = env_var_for_plugin(plugin_name);
-
-    env::var_os(&version_env_var)
-        .map(OsString::into_string)
-        .transpose()
-        .map_err(|_| anyhow!("Cannot parse env var: {} as unicode", version_env_var))
-}
-
-pub fn preset_version_for(plugin_name: &str) -> Result<String> {
-    Ok(find_versions(plugin_name, &env::current_dir()?)?.version)
+pub fn preset_version_for(plugin_name: &str) -> Result<Option<String>> {
+    Ok(find_versions(plugin_name, &env::current_dir()?)?.map(|spec| spec.version))
 }
 
 pub fn preset_versions(shim_name: &str) -> Result<Vec<String>> {
     shim_plugins(shim_name)?
         .into_iter()
-        .map(|plugin| preset_version_for(&plugin))
+        .filter_map(|plugin| preset_version_for(&plugin).transpose())
         .collect()
 }
 
@@ -470,6 +492,95 @@ pub fn resolve_symlink(symlink: &Path) -> Result<PathBuf> {
     symlink.canonicalize().map_err(Into::into)
 }
 
+pub fn asdf_run_hook<E, Ek, Ev>(hook_name: &str, args: &[&str], envs: E) -> Result<()>
+where
+    E: IntoIterator<Item = (Ek, Ev)>,
+    Ek: AsRef<OsStr>,
+    Ev: AsRef<OsStr>,
+{
+    if let Some(hook_cmd) = asdf_config_value(hook_name)? {
+        let output = call(
+            process::Command::new("bash")
+                .args([&["-c", &hook_cmd, "bash"], args].concat())
+                .envs(envs),
+        )?;
+
+        println!("{}", output);
+    }
+
+    Ok(())
+}
+
+pub fn list_plugin_bin_paths(plugin_name: &str, version: &str, install_type: &str) -> Result<Vec<String>> {
+  let plugin_path = plugin_path(plugin_name)?;
+  let install_path = install_path(plugin_name, install_type, version)?;
+
+  let list_bin_paths_path = plugin_path.join("bin").join("list-bin-paths");
+  if list_bin_paths_path.is_file() {
+    call(process::Command::new(list_bin_paths_path).envs(vec![
+      ("ASDF_INSTALL_TYPE", OsStr::new(install_type)),
+      ("ASDF_INSTALL_VERSION", OsStr::new(version)),
+      ("ASDF_INSTALL_PATH", install_path.as_os_str()),
+    ])).map(|output| output.split(' ').map(|part| part.to_string()).collect())
+  } else {
+    Ok(vec![String::from("bin")])
+  }
+}
+
+pub fn plugin_shims(plugin_name: &str, full_version: &str) -> Result<Vec<PathBuf>> {
+  Ok(fs::read_dir(asdf_data_dir()?.join("shims"))?
+      .into_iter()
+      .filter_map(Result::ok)
+      .map(|entry| entry.path())
+      .filter(|path| {
+        fs::read_to_string(path).map(|contents| contents.contains(&format!("# asdf-plugin: {} {}", plugin_name, full_version)))
+      }.is_ok())
+      .collect())
+}
+
+pub fn list_plugin_exec_paths(plugin_name: &str, full_version: &str) -> Result<Vec<PathBuf>> {
+  plugin_exists(plugin_name)?;
+
+  let tool_version: ToolVersion = full_version.parse()?;
+  let install_type = tool_version.install_type();
+  let version = tool_version.install_version(plugin_name)?.unwrap();
+
+  let plugin_shims_path = plugin_path(plugin_name)?.join("shims");
+  
+  let mut plugin_exec_paths = vec![];
+  if plugin_shims_path.is_dir() {
+      plugin_exec_paths.push(plugin_shims_path);
+  }
+
+  let bin_paths = list_plugin_bin_paths(plugin_name, &version, &install_type)?;
+
+  let install_path = install_path(plugin_name, &install_type, &version)?;
+
+  for bin_path in bin_paths {
+      plugin_exec_paths.push(install_path.join(bin_path));
+  }
+
+  Ok(plugin_exec_paths)
+}
+
+pub fn plugin_executables(plugin_name: &str, full_version: &str) -> Result<Vec<PathBuf>> {
+  let exec_paths = list_plugin_exec_paths(plugin_name, full_version)?;
+  let all_bin_paths = list_plugin_exec_paths(plugin_name, full_version)?;
+  
+  let mut plugin_executables = vec![];
+  for bin_path in all_bin_paths {
+    for entry in fs::read_dir(bin_path)? {
+      let entry = entry?;
+
+      if entry.path().is_executable() {
+          plugin_executables.push(entry.path());
+      }
+    }
+  }
+  
+  Ok(plugin_executables)
+}
+
 pub fn shim_plugin_versions(executable: &str) -> Result<Vec<String>> {
     let executable_path = PathBuf::from(executable);
     let executable_name = executable_path
@@ -519,17 +630,19 @@ pub fn select_version(shim_name: &str) -> Result<Option<String>> {
     let plugins = shim_plugins(shim_name)?;
 
     for plugin_name in plugins {
-        let version = find_versions(&plugin_name, &search_path)?.version;
-        let usable_plugin_versions = version.split(' ').collect::<Vec<_>>();
-        for plugin_version in usable_plugin_versions {
-            for plugin_and_version in &shim_versions {
-                let splitted = plugin_and_version.split(' ').collect::<Vec<_>>();
-                let (plugin_shim_name, plugin_shim_version) = (splitted[0], splitted[1]);
+        if let Some(version_spec) = find_versions(&plugin_name, &search_path)? {
+            let usable_plugin_versions = version_spec.version.split(' ').collect::<Vec<_>>();
+            for plugin_version in usable_plugin_versions {
+                for plugin_and_version in &shim_versions {
+                    let splitted = plugin_and_version.split(' ').collect::<Vec<_>>();
+                    let (plugin_shim_name, plugin_shim_version) = (splitted[0], splitted[1]);
 
-                if plugin_name == plugin_shim_name {
-                    if plugin_version == plugin_shim_version || plugin_version.starts_with("path:")
-                    {
-                        return Ok(Some(format!("{} {}", plugin_name, plugin_version)));
+                    if plugin_name == plugin_shim_name {
+                        if plugin_version == plugin_shim_version
+                            || plugin_version.starts_with("path:")
+                        {
+                            return Ok(Some(format!("{} {}", plugin_name, plugin_version)));
+                        }
                     }
                 }
             }
@@ -637,14 +750,13 @@ pub fn with_shim_executable(shim: &Path, shim_exec: &str) -> Result<()> {
 mod tests {
     use std::{
         env,
-        fs::{self, create_dir_all},
+        fs::{self},
         os::unix::prelude::PermissionsExt,
         path::{Path, PathBuf},
     };
 
-    use anyhow::{anyhow, Result};
+    use anyhow::Result;
     use copy_dir::copy_dir;
-    use itertools::Itertools;
     use serial_test::serial;
     use tempfile::TempDir;
     use tmp_env::{set_current_dir, set_var, CurrentDir, CurrentEnv};
@@ -653,9 +765,9 @@ mod tests {
     struct TestContext {
         home_dir: TempDir,
         project_dir: TempDir,
-        home_env: CurrentEnv,
-        path_env: CurrentEnv,
-        pwd: CurrentDir,
+        _home_env: CurrentEnv,
+        _path_env: CurrentEnv,
+        _pwd: CurrentDir,
     }
 
     fn setup() -> Result<TestContext> {
@@ -679,9 +791,9 @@ mod tests {
         new_paths.extend(paths);
 
         Ok(TestContext {
-            home_env: set_var("HOME", &home_dir.path()),
-            path_env: set_var("PATH", env::join_paths(new_paths)?),
-            pwd: set_current_dir(home_dir.path())?,
+            _home_env: set_var("HOME", &home_dir.path()),
+            _path_env: set_var("PATH", env::join_paths(new_paths)?),
+            _pwd: set_current_dir(home_dir.path())?,
             home_dir,
             project_dir,
         })
@@ -1050,12 +1162,12 @@ mod tests {
 
         assert_eq!(
             find_versions,
-            super::VersionSpecifier {
+            Some(super::VersionSpecifier {
                 version: String::from("0.1.0"),
                 source: super::VersionSource::ToolVersion(
                     context.project_dir.path().join(".tool-versions")
                 )
-            }
+            })
         );
 
         Ok(())
@@ -1081,12 +1193,12 @@ mod tests {
 
         assert_eq!(
             find_versions,
-            super::VersionSpecifier {
+            Some(super::VersionSpecifier {
                 version: String::from("0.2.0"),
                 source: super::VersionSource::Legacy(
                     context.project_dir.path().join(".dummy-version")
                 )
-            }
+            })
         );
 
         Ok(())
@@ -1108,12 +1220,12 @@ mod tests {
 
         assert_eq!(
             find_versions,
-            super::VersionSpecifier {
+            Some(super::VersionSpecifier {
                 version: String::from("0.1.0"),
                 source: super::VersionSource::ToolVersion(
                     context.home_dir.path().join(".tool-versions")
                 )
-            }
+            })
         );
 
         Ok(())
@@ -1146,12 +1258,12 @@ mod tests {
 
         assert_eq!(
             find_versions,
-            super::VersionSpecifier {
+            Some(super::VersionSpecifier {
                 version: String::from("0.1.0"),
                 source: super::VersionSource::ToolVersion(
                     context.home_dir.path().join(".tool-versions")
                 )
-            }
+            })
         );
 
         Ok(())
@@ -1168,10 +1280,10 @@ mod tests {
 
         assert_eq!(
             find_versions,
-            super::VersionSpecifier {
+            Some(super::VersionSpecifier {
                 version: String::from("0.2.0"),
                 source: super::VersionSource::EnvVar(String::from("ASDF_DUMMY_VERSION"))
-            }
+            })
         );
 
         Ok(())
@@ -1239,10 +1351,10 @@ mod tests {
 
         assert_eq!(
             find_versions,
-            super::VersionSpecifier {
+            Some(super::VersionSpecifier {
                 version: String::from("0.1.0"),
                 source: super::VersionSource::ToolVersion(default_tool_versions_filename)
-            }
+            })
         );
 
         Ok(())
@@ -1271,10 +1383,10 @@ mod tests {
 
         assert_eq!(
             find_versions,
-            super::VersionSpecifier {
+            Some(super::VersionSpecifier {
                 version: String::from(" 0.1.0"),
                 source: super::VersionSource::Legacy(dummy_version_path)
-            }
+            })
         );
 
         Ok(())
@@ -1293,7 +1405,7 @@ mod tests {
 
         let preset_version = super::preset_version_for("dummy")?;
 
-        assert_eq!(preset_version, "0.2.0");
+        assert_eq!(preset_version, Some(String::from("0.2.0")));
 
         Ok(())
     }
@@ -1313,7 +1425,7 @@ mod tests {
 
         let preset_version = super::preset_version_for("dummy")?;
 
-        assert_eq!(preset_version, "0.1.0");
+        assert_eq!(preset_version, Some(String::from("0.1.0")));
 
         Ok(())
     }
@@ -1332,7 +1444,7 @@ mod tests {
 
         let preset_version = super::preset_version_for("dummy")?;
 
-        assert_eq!(preset_version, "3.0.0");
+        assert_eq!(preset_version, Some(String::from("3.0.0")));
 
         Ok(())
     }
@@ -1350,7 +1462,7 @@ mod tests {
 
         let preset_version = super::preset_version_for("dummy")?;
 
-        assert_eq!(preset_version, "ref:master");
+        assert_eq!(preset_version, Some(String::from("ref:master")));
 
         Ok(())
     }
@@ -1368,7 +1480,10 @@ mod tests {
 
         let preset_version = super::preset_version_for("dummy")?;
 
-        assert_eq!(preset_version, "path:/some/place with spaces");
+        assert_eq!(
+            preset_version,
+            Some(String::from("path:/some/place with spaces"))
+        );
 
         Ok(())
     }

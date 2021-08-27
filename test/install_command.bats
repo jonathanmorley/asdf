@@ -245,7 +245,6 @@ EOM
 
 @test "install_command latest installs latest stable version" {
   run asdf install dummy latest
-  echo $output
   [ "$status" -eq 0 ]
   [ $(cat $ASDF_DIR/installs/dummy/2.0.0/version) = "2.0.0" ]
 }
@@ -273,7 +272,6 @@ EOM
 @test "install_command keeps the download directory when always_keep_download setting is true" {
   echo 'always_keep_download = yes' >$HOME/.asdfrc
   run asdf install dummy 1.1.0
-  echo $output
   [ "$status" -eq 0 ]
   [ -d $ASDF_DIR/downloads/dummy/1.1.0 ]
   [ $(cat $ASDF_DIR/installs/dummy/1.1.0/version) = "1.1.0" ]

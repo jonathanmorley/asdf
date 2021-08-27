@@ -10,17 +10,17 @@ macro_rules! bats_test {
                 .wait()
                 .unwrap()
                 .success());
-            assert!(false);
         }
     };
 }
 
-// Use `cargo build && bats test/<file> --filter <regex>` to run individual test cases
+// Use `cargo build && bats test --filter <test case>` to run individual test cases
 
 // Fails without fish
 //bats_test!(asdf_fish);
 bats_test!(asdf_sh);
-bats_test!(banned_commands);
+// Not relevant in the rust codebase
+//bats_test!(banned_commands);
 bats_test!(current_command);
 bats_test!(get_asdf_config_value);
 bats_test!(help_command);

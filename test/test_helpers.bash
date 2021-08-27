@@ -4,10 +4,10 @@
 # tests fail when it is set to something other than the temp dir.
 unset ASDF_DIR
 
-#if [ -z "${CARGO_BIN_EXE_asdf}" ]; then
+if [ -n "${LEGACY}" ]; then
   # shellcheck source=lib/utils.bash
-  #. "$(dirname "$BATS_TEST_DIRNAME")"/lib/utils.bash
-#fi
+  . "$(dirname "$BATS_TEST_DIRNAME")"/lib/utils.bash
+fi
 
 setup_asdf_dir() {
   if [ -n "${ASDF_BATS_SPACE_IN_PATH:-}" ]; then
@@ -22,7 +22,9 @@ setup_asdf_dir() {
   mkdir -p "$ASDF_DIR/shims"
   mkdir -p "$ASDF_DIR/tmp"
 
-  if [ -z "${CARGO_BIN_EXE_asdf}" ]; then
+  if [ -n "${LEGACY}" ]; then
+    ASDF_BIN="$(dirname "$BATS_TEST_DIRNAME")/bin"
+  elif [ -z "${CARGO_BIN_EXE_asdf}" ]; then
     ASDF_BIN="$(dirname "$BATS_TEST_DIRNAME")/target/debug"
   else
     ASDF_BIN="$(dirname "$CARGO_BIN_EXE_asdf")"

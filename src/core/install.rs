@@ -1,7 +1,4 @@
-use crate::{
-    asdf_config_value, call, download_path, find_versions, install_path, list_installed_plugins,
-    plugin_exists, plugin_path, tool_version::ToolVersion,
-};
+use crate::{asdf_config_value, asdf_run_hook, call, core::reshim::reshim_plugin, download_path, find_versions, install_path, list_installed_plugins, plugin_exists, plugin_path, tool_version::ToolVersion};
 use anyhow::{anyhow, Result};
 use num_cpus;
 use std::{env, ffi::OsStr, fs, process};
@@ -25,10 +22,11 @@ pub fn install_local_tool_versions() -> Result<()> {
     let mut some_tools_installed = false;
 
     for plugin in plugins {
-        let plugin_versions = find_versions(&plugin, &search_path)?.version;
-
-        for plugin_version in plugin_versions.split(' ') {
-            install_tool_version(&plugin, plugin_version, false)?;
+        if let Some(plugin_versions) = find_versions(&plugin, &search_path)? {
+            some_tools_installed = true;
+            for plugin_version in plugin_versions.version.split(' ') {
+                install_tool_version(&plugin, plugin_version, false)?;
+            }
         }
     }
 
@@ -55,10 +53,9 @@ pub fn install_tool_version(
     let install_type = tool_version.install_type();
     let version = tool_version.install_version(plugin_name)?.unwrap();
 
-    dbg!(tool_version);
-
     let install_path = install_path(plugin_name, &install_type, &version)?;
     let download_path = download_path(plugin_name, &install_type, &version)?;
+    let concurrency = concurrency();
 
     // trap 'handle_cancel $install_path' INT
 
@@ -72,6 +69,30 @@ pub fn install_tool_version(
         // Not a legacy plugin
         // Run the download script
         fs::create_dir(&download_path.clone().unwrap())?;
+
+        asdf_run_hook(
+            &format!("pre_asdf_install_{}", plugin_name),
+            &[full_version],
+            vec![
+                ("concurrency", OsStr::new(&concurrency.to_string())),
+                ("download_path", download_path.clone().unwrap().as_os_str()),
+                ("install_path", install_path.as_os_str()),
+                ("version", OsStr::new(&version)),
+                ("full_version", OsStr::new(&full_version)),
+                ("install_type", OsStr::new(&install_type)),
+                (
+                    "keep_download",
+                    OsStr::new(if keep_download { "true" } else { "" }),
+                ),
+                ("plugin_path", plugin_path.as_os_str()),
+                (
+                    "flags",
+                    OsStr::new(if keep_download { "--keep-download" } else { "" }),
+                ),
+                ("plugin_name", OsStr::new(&plugin_name)),
+                // There are more available via bash because of the variable non-locality
+            ],
+        )?;
 
         call(process::Command::new(&download_bin).envs(vec![
             ("ASDF_INSTALL_TYPE", OsStr::new(&install_type)),
@@ -94,23 +115,48 @@ pub fn install_tool_version(
             "ASDF_DOWNLOAD_PATH",
             download_path.clone().unwrap().as_os_str(),
         ),
-        (
-            "ASDF_CONCURRENCY",
-            OsStr::new(&format!("{}", concurrency())),
-        ),
+        ("ASDF_CONCURRENCY", OsStr::new(&concurrency.to_string())),
     ]))?;
 
-    dbg!("installed to {}", install_path);
-
-    let always_keep_download =
-        asdf_config_value("always_keep_download")?.unwrap_or(String::from("no"));
+    let always_keep_download = asdf_config_value("always_keep_download")?.unwrap_or_default();
     if !keep_download && !always_keep_download.eq("yes") && download_path.clone().unwrap().is_dir()
     {
-        fs::remove_dir_all(download_path.unwrap())?;
+        fs::remove_dir_all(download_path.clone().unwrap())?;
     }
 
-    // asdf reshim "$plugin_name" "$full_version"
-    // asdf_run_hook "post_asdf_install_${plugin_name}" "$full_version"
+    reshim_plugin(plugin_name, Some(full_version))?;
+
+    asdf_run_hook(
+        &format!("post_asdf_install_{}", plugin_name),
+        &[full_version],
+        vec![
+            (
+                "always_keep_download",
+                OsStr::new(&always_keep_download.to_string()),
+            ),
+            ("install_exit_code", OsStr::new(&0.to_string())),
+            ("download_exit_code", OsStr::new(&0.to_string())),
+            ("concurrency", OsStr::new(&concurrency.to_string())),
+            ("download_path", download_path.clone().unwrap().as_os_str()),
+            ("install_path", install_path.as_os_str()),
+            ("version", OsStr::new(&version)),
+            ("full_version", OsStr::new(&full_version)),
+            ("install_type", OsStr::new(&install_type)),
+            (
+                "keep_download",
+                OsStr::new(if keep_download { "true" } else { "" }),
+            ),
+            ("plugin_path", plugin_path.as_os_str()),
+            (
+                "flags",
+                OsStr::new(if keep_download { "--keep-download" } else { "" }),
+            ),
+            ("plugin_name", OsStr::new(&plugin_name)),
+            // There are more available via bash because of the variable non-locality
+        ],
+    )?;
+
+    
 
     Ok(())
 }
