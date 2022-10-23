@@ -2,9 +2,9 @@ macro_rules! bats_test {
     ($x:ident) => {
         #[test]
         fn $x() {
+            //assert_eq!(std::env::current_dir().unwrap().to_str().unwrap(), "foo");
             assert!(std::process::Command::new("bats")
                 .arg(format!("test/{}.bats", stringify!($x)))
-                .env("CARGO_BIN_EXE_asdf", env!("CARGO_BIN_EXE_asdf"))
                 .spawn()
                 .unwrap()
                 .wait()

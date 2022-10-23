@@ -21,14 +21,7 @@ setup_asdf_dir() {
   mkdir -p "$ASDF_DIR/installs"
   mkdir -p "$ASDF_DIR/shims"
   mkdir -p "$ASDF_DIR/tmp"
-
-  if [ -n "${LEGACY}" ]; then
-    ASDF_BIN="$(dirname "$BATS_TEST_DIRNAME")/bin"
-  elif [ -z "${CARGO_BIN_EXE_asdf}" ]; then
-    ASDF_BIN="$(dirname "$BATS_TEST_DIRNAME")/target/debug"
-  else
-    ASDF_BIN="$(dirname "$CARGO_BIN_EXE_asdf")"
-  fi
+  ASDF_BIN="$(dirname "$BATS_TEST_DIRNAME")/bin"
 
   # shellcheck disable=SC2031
   PATH="$ASDF_BIN:$ASDF_DIR/shims:$PATH"
