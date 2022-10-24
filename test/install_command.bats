@@ -32,6 +32,7 @@ teardown() {
   cd $PROJECT_DIR
   echo -n 'dummy 1.2.0' >".tool-versions"
   run asdf install
+  echo $output
   [ "$status" -eq 0 ]
   [ $(cat $ASDF_DIR/installs/dummy/1.2.0/version) = "1.2.0" ]
 }
@@ -40,6 +41,7 @@ teardown() {
   cd $PROJECT_DIR
   echo -n 'dummy 1.2.0' >".tool-versions"
   run asdf install dummy
+  echo $output
   [ "$status" -eq 0 ]
   [ $(cat $ASDF_DIR/installs/dummy/1.2.0/version) = "1.2.0" ]
 }
@@ -139,6 +141,7 @@ teardown() {
 
   run asdf install
   [ "$status" -eq 1 ]
+  echo $output
   [ "$output" = "other_dummy plugin is not installed" ]
 }
 

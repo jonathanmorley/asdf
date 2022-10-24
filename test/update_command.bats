@@ -30,7 +30,7 @@ teardown() {
   run asdf update --head
   [ "$status" -eq 0 ]
   cd $ASDF_DIR
-  [ $(git rev-parse --abbrev-ref HEAD) = "master" ]
+  [ $(git rev-parse --abbrev-ref HEAD) = "rust" ]
 }
 
 @test "asdf update should checkout the latest non-RC tag" {

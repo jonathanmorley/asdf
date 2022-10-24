@@ -4,10 +4,8 @@
 # tests fail when it is set to something other than the temp dir.
 unset ASDF_DIR
 
-if [ -n "${LEGACY}" ]; then
-  # shellcheck source=lib/utils.bash
-  . "$(dirname "$BATS_TEST_DIRNAME")"/lib/utils.bash
-fi
+# shellcheck source=lib/utils.bash
+. "$(dirname "$BATS_TEST_DIRNAME")"/lib/utils.bash
 
 setup_asdf_dir() {
   if [ -n "${ASDF_BATS_SPACE_IN_PATH:-}" ]; then

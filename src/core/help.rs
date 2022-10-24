@@ -2,7 +2,7 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::plugin_path;
-use crate::tool_version::ToolVersion;
+use crate::tool_versions::ToolVersion;
 use anyhow::Result;
 
 pub fn plugin_help(plugin_name: &str, tool_version: Option<&ToolVersion>) -> Result<String> {

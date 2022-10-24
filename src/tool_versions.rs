@@ -1,9 +1,49 @@
 use std::{fs, path::PathBuf, str::FromStr};
+use std::collections::HashMap;
 
 use anyhow::{anyhow, Error, Result};
 
 use crate::core::latest::get_latest_version;
 use crate::installs_path;
+
+pub struct ToolVersions(pub HashMap<String, Vec<ToolVersion>>);
+
+impl FromStr for ToolVersions {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(ToolVersions(s
+            .lines()
+            // Remove comments
+            .filter_map(|line| {
+                // Remove whitespace before pound sign, the pound sign, and everything after it
+                let uncommented = if let Some(pound_index) = line.find("#") {
+                    line[..pound_index].trim_end()
+                } else {
+                    line.trim_end()
+                };
+            
+                if uncommented.is_empty() {
+                    None
+                } else {
+                    Some(line)
+                }
+            })
+            .map(|line| {
+                let mut components = line.split(" ");
+                let plugin_name = components.next();
+                let versions = components.map(ToolVersion::from_str).collect::<Result<Vec<_>>>();
+                
+                match (plugin_name, versions) {
+                    (Some(plugin_name), Ok(versions)) => Ok((plugin_name.to_owned(), versions)),
+                    (_, Err(e)) => Err(e),
+                    _ => Err(anyhow!("Cannot parse .tool-versions line: {}", line))
+                }
+            })
+            .collect::<Result<HashMap<_, _>>>()?
+        ))
+    }
+}
 
 #[derive(Debug)]
 pub enum ToolVersion {

@@ -1,5 +1,5 @@
 pub mod help;
-pub mod install;
+pub mod installs;
 pub mod latest;
 pub mod list;
 pub mod reshim;

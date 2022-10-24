@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use asdf::core::install::{
+use asdf::core::installs::{
     install_local_tool_versions, install_one_local_tool, install_tool_version,
 };
 use structopt::StructOpt;

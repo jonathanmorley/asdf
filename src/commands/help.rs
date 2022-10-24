@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use asdf::asdf_data_dir;
 use asdf::core::help::plugin_help;
-use asdf::tool_version::ToolVersion;
+use asdf::tool_versions::ToolVersion;
 use structopt::StructOpt;
 
 use crate::Command as AsdfCommand;
@@ -27,7 +27,7 @@ impl HelpCommand {
                     Err(anyhow!("No documentation for plugin {}", plugin_name))
                 }
             } else {
-                Err(anyhow!("No plugin named {}", plugin_name))
+                Err(anyhow!("No rust plugin named {}", plugin_name))
             }
         } else {
             AsdfCommand::clap().print_long_help()?;

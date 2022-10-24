@@ -1,5 +1,10 @@
-use crate::{asdf_config_value, asdf_run_hook, call, core::reshim::reshim_plugin, download_path, find_versions, install_path, list_installed_plugins, plugin_exists, plugin_path, tool_version::ToolVersion};
+use crate::{
+    asdf_config_value, asdf_run_hook, call, core::reshim::reshim_plugin, download_path,
+    find_versions, find_tool_versions, install_path, list_installed_plugins, plugin_exists, plugin_path,
+    tool_versions::{ToolVersion, self}, VersionSpecifier, parse_tool_versions_file,
+};
 use anyhow::{anyhow, Result};
+use itertools::Itertools;
 use num_cpus;
 use std::{env, ffi::OsStr, fs, process};
 
@@ -8,7 +13,15 @@ pub fn concurrency() -> usize {
 }
 
 pub fn install_one_local_tool(plugin_name: &str) -> Result<()> {
-    Ok(())
+    let search_path = std::env::current_dir()?;
+
+    let plugin_version_and_path = find_versions(plugin_name, &search_path)?;
+
+    if let Some(VersionSpecifier { version, .. }) = plugin_version_and_path {
+        install_tool_version(plugin_name, &version, false)
+    } else {
+        Err(anyhow!("No versions specified for {} in config files or environment", plugin_name))
+    }
 }
 
 pub fn install_local_tool_versions() -> Result<()> {
@@ -19,6 +32,24 @@ pub fn install_local_tool_versions() -> Result<()> {
     }
 
     let search_path = env::current_dir()?;
+
+    let tool_versions_path = find_tool_versions()?;
+
+    let mut plugins_not_installed = vec![];
+    if let Some(tool_versions_path) = tool_versions_path {
+        let tool_versions = parse_tool_versions_file(&tool_versions_path)?;
+
+        for plugin in tool_versions.0.keys() {
+            if !plugins.contains(plugin) {
+                plugins_not_installed.push(plugin.clone());
+            }
+        }
+    }
+
+    if !plugins_not_installed.is_empty() {
+        return Err(anyhow!(plugins_not_installed.into_iter().map(|plugin| format!("{} plugin is not installed", plugin)).join("\n")));
+    }
+ 
     let mut some_tools_installed = false;
 
     for plugin in plugins {
@@ -155,8 +186,6 @@ pub fn install_tool_version(
             // There are more available via bash because of the variable non-locality
         ],
     )?;
-
-    
 
     Ok(())
 }
