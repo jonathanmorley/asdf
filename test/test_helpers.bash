@@ -13,7 +13,7 @@ setup_asdf_dir() {
   else
     BASE_DIR="$(mktemp -dt asdf.XXXX)"
   fi
-  BASE_DIR="$(realpath $BASE_DIR)"
+  BASE_DIR="$(realpath "$BASE_DIR")"
   HOME="$BASE_DIR/home"
   ASDF_DIR="$HOME/.asdf"
   mkdir -p "$ASDF_DIR/plugins"

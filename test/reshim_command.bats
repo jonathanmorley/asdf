@@ -80,6 +80,7 @@ teardown() {
   [ "0" -eq "$(ls "$ASDF_DIR/shims/"dummy* | wc -l)" ]
 
   run asdf reshim dummy
+  echo "$output"
   [ "$status" -eq 0 ]
   [ "1" -eq "$(ls "$ASDF_DIR/shims/"dummy* | wc -l)" ]
 
