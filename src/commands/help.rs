@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
-use asdf::asdf_data_dir;
-use asdf::core::help::plugin_help;
-use asdf::tool_versions::ToolVersion;
+use asdr::asdf_data_dir;
+use asdr::core::help::plugin_help;
+use asdr::tool_versions::ToolVersion;
 use structopt::StructOpt;
 
 use crate::Command as AsdfCommand;

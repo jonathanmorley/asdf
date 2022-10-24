@@ -16,6 +16,8 @@ macro_rules! bats_test {
 
 // Use `cargo build && bats test --filter <test case>` to run individual test cases
 
+// Fails without elvish
+//bats_test!(asdf_elvish);
 // Fails without fish
 //bats_test!(asdf_fish);
 bats_test!(asdf_sh);

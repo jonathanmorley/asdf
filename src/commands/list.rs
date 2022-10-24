@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
-use asdf::core::list::all_plugin_versions;
-use asdf::{list_installed_versions, plugin_exists, plugins_path};
+use asdr::core::list::all_plugin_versions;
+use asdr::{list_installed_versions, plugin_exists, plugins_path};
 use regex::Regex;
 use std::fs;
 use std::str;

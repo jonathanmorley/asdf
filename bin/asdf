@@ -38,7 +38,7 @@ find_asdf_cmd() {
     ;;
 
   'install' | '--version' | 'version')
-    printf "%s %s\\n" "$asdf_bin_dir/asdf" 1
+    printf "%s %s\\n" "$asdf_bin_dir/asdr" 1
     ;;
 
   *)
@@ -70,8 +70,6 @@ asdf_cmd() {
   if [ -z "$ASDF_CMD_FILE" ]; then
     IFS=' ' read -r ASDF_CMD_FILE args_offset <<<"$(find_plugin_cmd "$@")"
   fi
-
-  echo "/ $ASDF_CMD_FILE" "${@:${args_offset}} /"
 
   if [ -x "$ASDF_CMD_FILE" ]; then
     exec "$ASDF_CMD_FILE" "${@:${args_offset}}"

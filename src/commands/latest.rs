@@ -1,5 +1,5 @@
 use anyhow::Result;
-use asdf::core::latest::get_latest_version;
+use asdr::core::latest::get_latest_version;
 use structopt::StructOpt;
 
 #[derive(StructOpt, Debug)]

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use asdf::core::reshim::{reshim_plugin, reshim_plugins};
+use asdr::core::reshim::{reshim_plugin, reshim_plugins};
 use structopt::StructOpt;
 
 #[derive(StructOpt, Debug)]
