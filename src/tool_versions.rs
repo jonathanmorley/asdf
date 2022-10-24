@@ -76,7 +76,7 @@ impl FromStr for ToolVersion {
 impl ToolVersion {
     pub fn install_type(&self) -> String {
         match self {
-            &ToolVersion::Latest(_) => "version".to_string(),
+            ToolVersion::Latest(_) => "version".to_string(),
             ToolVersion::Version(_) => "version".to_string(),
             ToolVersion::Path(_) => "path".to_string(),
             ToolVersion::Ref(_) => "ref".to_string(),

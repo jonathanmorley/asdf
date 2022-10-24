@@ -14,6 +14,8 @@ setup() {
   mkdir -p "$ASDF_DIR/tmp"
   ASDF_BIN="$ASDF_DIR/bin"
 
+  (cd "$ASDF_DIR" && cargo build)
+
   # shellcheck disable=SC2031
   PATH=$ASDF_BIN:$ASDF_DIR/shims:$PATH
   install_dummy_plugin
