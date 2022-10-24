@@ -38,7 +38,7 @@ pub fn get_output(
             cmd.env("ASDF_INSTALL_VERSION", install_version);
         }
 
-        cmd.env("ASDF_INSTALL_PATH", tool_version.install_path(plugin_name)?);
+        cmd.env("ASDF_INSTALL_PATH", tool_version.install_path(plugin_name)?.unwrap());
     }
 
     String::from_utf8(cmd.output()?.stdout).map_err(Into::into)

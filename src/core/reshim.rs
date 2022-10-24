@@ -3,7 +3,6 @@ use is_executable::IsExecutable;
 use itertools::Itertools;
 use std::{
     collections::HashSet,
-    env,
     ffi::OsStr,
     fs,
     os::unix::prelude::PermissionsExt,

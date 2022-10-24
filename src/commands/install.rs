@@ -18,7 +18,7 @@ impl InstallCommand {
             (None, None) => install_local_tool_versions(),
             (Some(ref plugin_name), None) => install_one_local_tool(plugin_name),
             (Some(ref plugin_name), Some(ref tool_version)) => {
-                install_tool_version(&plugin_name, &tool_version, self.keep_download)
+                install_tool_version(&plugin_name, &tool_version.parse()?, self.keep_download)
             }
             _ => Err(anyhow!("Unexpected arguments")),
         }

@@ -4,19 +4,18 @@ pub mod tool_versions;
 use anyhow::{anyhow, Result};
 use dirs;
 use is_executable::IsExecutable;
-use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
-use std::fs::DirEntry;
 use std::path::{Path, PathBuf};
 use std::process;
-use std::{fs, str};
+use std::str;
 use tool_versions::{ToolVersion, ToolVersions};
 use which::which_in;
+use fs_err as fs;
 
 #[derive(Debug, PartialEq)]
 pub struct VersionSpecifier {
-    pub version: String,
+    pub versions: Vec<ToolVersion>,
     source: VersionSource,
 }
 
@@ -122,7 +121,7 @@ pub fn plugin_exists(plugin_name: &str) -> Result<()> {
 }
 
 // check_if_version_exists
-pub fn version_exists(plugin_name: &str, version: &str) -> Result<()> {
+pub fn version_exists(plugin_name: &str, version: &ToolVersion) -> Result<()> {
     plugin_exists(plugin_name)?;
 
     if let Some(install_path) = find_install_path(plugin_name, version)? {
@@ -150,13 +149,17 @@ pub fn version_in_dir(
     legacy_filenames: &[PathBuf],
 ) -> Result<Option<VersionSpecifier>> {
     let tool_versions_path = search_path.join(".tool-versions");
-    let asdf_version = parse_asdf_version_file(&tool_versions_path, plugin_name)?;
 
-    if let Some(asdf_version) = asdf_version {
-        return Ok(Some(VersionSpecifier {
-            version: asdf_version,
-            source: VersionSource::ToolVersion(tool_versions_path),
-        }));
+    if tool_versions_path.is_file() {
+        let mut tool_versions = parse_tool_versions_file(&tool_versions_path)?;
+        let plugin_versions = tool_versions.0.remove(plugin_name);
+
+        if let Some(plugin_versions) = plugin_versions {
+            return Ok(Some(VersionSpecifier {
+                versions: plugin_versions,
+                source: VersionSource::ToolVersion(tool_versions_path),
+            }));
+        }
     }
 
     for legacy_filename in legacy_filenames {
@@ -165,7 +168,7 @@ pub fn version_in_dir(
 
         if let Some(legacy_version) = legacy_version {
             return Ok(Some(VersionSpecifier {
-                version: legacy_version,
+                versions: vec![legacy_version.parse()?],
                 source: VersionSource::Legacy(legacy_file_path),
             }));
         }
@@ -180,7 +183,7 @@ pub fn find_versions(plugin_name: &str, search_path: &Path) -> Result<Option<Ver
 
     if let Some(version) = version {
         return Ok(Some(VersionSpecifier {
-            version,
+            versions: vec![version.parse()?],
             source: VersionSource::EnvVar(env_var_for_plugin(plugin_name)),
         }));
     }
@@ -221,11 +224,12 @@ pub fn find_versions(plugin_name: &str, search_path: &Path) -> Result<Option<Ver
         let asdf_default_tool_versions_path = PathBuf::from(asdf_default_tool_versions_filename);
 
         if asdf_default_tool_versions_path.is_file() {
-            let versions = parse_asdf_version_file(&asdf_default_tool_versions_path, plugin_name)?;
+            let mut tool_versions = parse_tool_versions_file(&asdf_default_tool_versions_path)?;
+            let plugin_versions = tool_versions.0.remove(plugin_name);
 
-            if let Some(versions) = versions {
+            if let Some(plugin_versions) = plugin_versions {
                 return Ok(Some(VersionSpecifier {
-                    version: versions,
+                    versions: plugin_versions,
                     source: VersionSource::ToolVersion(asdf_default_tool_versions_path),
                 }));
             }
@@ -248,30 +252,8 @@ fn version_from_env(plugin_name: &str) -> Result<Option<String>> {
 }
 
 // find_install_path
-pub fn find_install_path(plugin_name: &str, version: &str) -> Result<Option<PathBuf>> {
-    if version == "system" {
-        Ok(None)
-    } else {
-        let split = version.splitn(2, ':').collect::<Vec<_>>();
-
-        match split.len() {
-            1 => install_path(plugin_name, "version", version).map(Some),
-            2 => {
-                let (version_type, version) = (split[0], split[1]);
-
-                match version_type {
-                    "ref" => install_path(plugin_name, "ref", &version).map(Some),
-                    // This is for people who have the local source already compiled
-                    // Like those who work on the language, etc
-                    // We'll allow specifying path:/foo/bar/project in .tool-versions
-                    // And then use the binaries there
-                    "path" => Ok(Some(PathBuf::from(version))),
-                    _ => install_path(plugin_name, "version", version).map(Some),
-                }
-            }
-            _ => Err(anyhow!("Unknown version specifier: {}", version)),
-        }
-    }
+pub fn find_install_path(plugin_name: &str, version: &ToolVersion) -> Result<Option<PathBuf>> {
+    version.install_path(plugin_name)
 }
 
 // get_custom_executable_path
@@ -338,8 +320,13 @@ pub fn list_installed_plugins() -> Result<Vec<String>> {
             .collect::<Result<Vec<_>>>()?;
         plugins.sort();
 
+        if plugins.is_empty() {
+            eprintln!("No plugins installed");
+        }
+
         Ok(plugins)
     } else {
+        eprintln!("No plugins installed");
         Ok(vec![])
     }
 }
@@ -469,37 +456,37 @@ fn env_var_for_plugin(plugin_name: &str) -> String {
     format!("ASDF_{}_VERSION", plugin_name.to_uppercase())
 }
 
-pub fn preset_version_for(plugin_name: &str) -> Result<Option<String>> {
-    Ok(find_versions(plugin_name, &env::current_dir()?)?.map(|spec| spec.version))
+pub fn preset_version_for(plugin_name: &str) -> Result<Option<ToolVersion>> {
+    Ok(find_versions(plugin_name, &env::current_dir()?)?.map(|mut spec| spec.versions.remove(0)))
 }
 
-pub fn preset_versions(shim_name: &str) -> Result<Vec<String>> {
-    shim_plugins(shim_name)?
-        .into_iter()
-        .filter_map(|plugin| preset_version_for(&plugin).transpose())
-        .collect()
-}
+// pub fn preset_versions(shim_name: &str) -> Result<Vec<ToolVersion>> {
+//     shim_plugins(shim_name)?
+//         .into_iter()
+//         .filter_map(|plugin| preset_version_for(&plugin).transpose())
+//         .collect()
+// }
 
-pub fn select_from_preset_version(shim_name: &str) -> Result<Option<String>> {
-    let shim_versions = shim_versions(shim_name)?;
-    if !shim_versions.is_empty() {
-        let preset_versions = preset_versions(shim_name)?;
-        Ok(preset_versions
-            .into_iter()
-            .find(|preset_version| preset_version.contains(&shim_versions.join(" "))))
-    } else {
-        Ok(None)
-    }
-}
+// pub fn select_from_preset_version(shim_name: &str) -> Result<Option<ToolVersion>> {
+//     let shim_versions = shim_versions(shim_name)?;
+//     if !shim_versions.is_empty() {
+//         let preset_versions = preset_versions(shim_name)?;
+//         Ok(preset_versions
+//             .into_iter()
+//             .find(|preset_version| preset_version.contains(&shim_versions.join(" "))))
+//     } else {
+//         Ok(None)
+//     }
+// }
 
 pub fn executable_path(
     plugin_name: &str,
-    version: &str,
+    version: &ToolVersion,
     executable_path: &Path,
 ) -> Result<PathBuf> {
     version_exists(plugin_name, version)?;
 
-    if version == "system" {
+    if let ToolVersion::System = version {
         let shims_path = shims_path()?;
         let filtered_path = env::var_os("PATH")
             .map(|paths| {
@@ -627,7 +614,9 @@ pub fn plugin_executables(plugin_name: &str, full_version: &str) -> Result<Vec<P
     Ok(plugin_executables)
 }
 
-pub fn shim_plugin_versions(executable: &str) -> Result<Vec<String>> {
+/// Given the path to a shim,
+/// return a Vec of '<plugin> <version>' strings that the shim is valid for 
+pub fn shim_plugin_versions(executable: &str) -> Result<Vec<(String, String)>> {
     let executable_path = PathBuf::from(executable);
     let executable_name = executable_path
         .file_name()
@@ -639,64 +628,69 @@ pub fn shim_plugin_versions(executable: &str) -> Result<Vec<String>> {
             .lines()
             .filter(|line| line.starts_with("# asdf-plugin: "))
             .map(|line| line[15..].to_string())
+            .filter_map(|line| {
+                let (plugin, version) = line.split_once(" ")?;
+                Some((plugin.to_owned(), version.to_owned()))
+            })
             .collect())
     } else {
         Err(anyhow!("asdf: unknown shim {:?}", executable_name))
     }
 }
 
-pub fn shim_plugins(executable: &str) -> Result<Vec<String>> {
-    Ok(shim_plugin_versions(executable)?
-        .into_iter()
-        .map(|version| version.split(' ').next().unwrap().to_string())
-        .collect())
-}
+/// Given the path to a shim,
+/// list all the plugins that provide it
+// pub fn shim_plugins(executable: &str) -> Result<Vec<String>> {
+//     Ok(shim_plugin_versions(executable)?
+//         .into_iter()
+//         .map(|(plugin, version)| plugin)
+//         .collect())
+// }
 
-pub fn shim_versions(shim_name: &str) -> Result<Vec<String>> {
-    let mut versions = shim_plugin_versions(shim_name)?;
-    let mut system_versions = versions
-        .clone()
-        .into_iter()
-        .map(|version| format!("{} system", version.split(' ').next().unwrap()))
-        .collect();
-    versions.append(&mut system_versions);
+// pub fn shim_versions(shim_name: &str) -> Result<Vec<&str>> {
+//     let mut versions = shim_plugin_versions(shim_name)?;
+//     let mut system_versions = versions
+//         .clone()
+//         .into_iter()
+//         .map(|(plugin, _)| format!("{} system", version.split(' ').next().unwrap()))
+//         .collect();
+//     versions.append(&mut system_versions);
 
-    Ok(versions)
-}
+//     Ok(versions)
+// }
 
-pub fn select_version(shim_name: &str) -> Result<Option<String>> {
-    // First, we get the all the plugins where the
-    // current shim is available.
-    // Then, we iterate on all versions set for each plugin
-    // Note that multiple plugin versions can be set for a single plugin.
-    // These are separated by a space. e.g. python 3.7.2 2.7.15
-    // For each plugin/version pair, we check if it is present in the shim
-    let search_path = env::current_dir()?;
-    let shim_versions = shim_versions(shim_name)?;
-    let plugins = shim_plugins(shim_name)?;
+// pub fn select_version(shim_name: &str) -> Result<Option<String>> {
+//     // First, we get the all the plugins where the
+//     // current shim is available.
+//     // Then, we iterate on all versions set for each plugin
+//     // Note that multiple plugin versions can be set for a single plugin.
+//     // These are separated by a space. e.g. python 3.7.2 2.7.15
+//     // For each plugin/version pair, we check if it is present in the shim
+//     let search_path = env::current_dir()?;
+//     let shim_versions = shim_versions(shim_name)?;
+//     let plugins = shim_plugins(shim_name)?;
 
-    for plugin_name in plugins {
-        if let Some(version_spec) = find_versions(&plugin_name, &search_path)? {
-            let usable_plugin_versions = version_spec.version.split(' ').collect::<Vec<_>>();
-            for plugin_version in usable_plugin_versions {
-                for plugin_and_version in &shim_versions {
-                    let splitted = plugin_and_version.split(' ').collect::<Vec<_>>();
-                    let (plugin_shim_name, plugin_shim_version) = (splitted[0], splitted[1]);
+//     for plugin_name in plugins {
+//         if let Some(version_spec) = find_versions(&plugin_name, &search_path)? {
+//             let usable_plugin_versions = version_spec.versions;
+//             for plugin_version in usable_plugin_versions {
+//                 for shim_version in &shim_versions {
+//                     let splitted = plugin_version;
 
-                    if plugin_name == plugin_shim_name {
-                        if plugin_version == plugin_shim_version
-                            || plugin_version.starts_with("path:")
-                        {
-                            return Ok(Some(format!("{} {}", plugin_name, plugin_version)));
-                        }
-                    }
-                }
-            }
-        }
-    }
+//                     // if plugin_name == plugin_shim_name {
+//                     //     if plugin_version == plugin_shim_version
+//                     //         || plugin_version.install_type() == "path"
+//                     //     {
+//                     //         return Ok(Some(format!("{} {}", plugin_name, plugin_version)));
+//                     //     }
+//                     // }
+//                 }
+//             }
+//         }
+//     }
 
-    Ok(None)
-}
+//     Ok(None)
+// }
 
 pub fn with_shim_executable(shim: &Path, shim_exec: &str) -> Result<()> {
     let shim_name = shim.file_name().unwrap_or(shim.as_os_str());
@@ -709,8 +703,8 @@ pub fn with_shim_executable(shim: &Path, shim_exec: &str) -> Result<()> {
         ));
     }
 
-    let selected_version = select_version(&shim_name.to_str().unwrap())?
-        .or_else(|| select_from_preset_version(shim_name.to_str().unwrap()).unwrap());
+    // let selected_version = select_version(&shim_name.to_str().unwrap())?
+    //     .or_else(|| select_from_preset_version(shim_name.to_str().unwrap()).unwrap());
 
     Ok(())
 
@@ -1023,7 +1017,7 @@ mod tests {
     fn version_exists_without_plugin() -> Result<()> {
         let _context = setup()?;
 
-        let version_exists = super::version_exists("inexistent", "1.0.0").unwrap_err();
+        let version_exists = super::version_exists("inexistent", &"1.0.0".parse()?).unwrap_err();
 
         assert_eq!(version_exists.to_string(), "No such plugin: inexistent");
 
@@ -1036,7 +1030,7 @@ mod tests {
     fn version_exists_without_version() -> Result<()> {
         let _context = setup()?;
 
-        let version_exists = super::version_exists("dummy", "1.0.0").unwrap_err();
+        let version_exists = super::version_exists("dummy", &"1.0.0".parse()?).unwrap_err();
 
         assert_eq!(version_exists.to_string(), "");
 
@@ -1059,7 +1053,7 @@ mod tests {
     fn version_exists_with_version() -> Result<()> {
         let _context = setup()?;
 
-        let version_exists = super::version_exists("dummy", "0.1.0").unwrap();
+        let version_exists = super::version_exists("dummy", &"0.1.0".parse()?).unwrap();
 
         assert_eq!(version_exists, ());
 
@@ -1081,7 +1075,7 @@ mod tests {
                 .join("foo"),
         )?;
 
-        let version_exists = super::version_exists("foo", "system").unwrap();
+        let version_exists = super::version_exists("foo", &"system".parse()?).unwrap();
 
         assert_eq!(version_exists, ());
 
@@ -1112,7 +1106,7 @@ mod tests {
                 .join("ref-master"),
         )?;
 
-        let version_exists = super::version_exists("foo", "ref:master").unwrap();
+        let version_exists = super::version_exists("foo", &"ref:master".parse()?).unwrap();
 
         assert_eq!(version_exists, ());
 
@@ -1209,7 +1203,7 @@ mod tests {
         assert_eq!(
             find_versions,
             Some(super::VersionSpecifier {
-                version: String::from("0.1.0"),
+                versions: vec!["0.1.0".parse()?],
                 source: super::VersionSource::ToolVersion(
                     context.project_dir.path().join(".tool-versions")
                 )
@@ -1240,7 +1234,7 @@ mod tests {
         assert_eq!(
             find_versions,
             Some(super::VersionSpecifier {
-                version: String::from("0.2.0"),
+                versions: vec!["0.2.0".parse()?],
                 source: super::VersionSource::Legacy(
                     context.project_dir.path().join(".dummy-version")
                 )
@@ -1267,7 +1261,7 @@ mod tests {
         assert_eq!(
             find_versions,
             Some(super::VersionSpecifier {
-                version: String::from("0.1.0"),
+                versions: vec!["0.1.0".parse()?],
                 source: super::VersionSource::ToolVersion(
                     context.home_dir.path().join(".tool-versions")
                 )
@@ -1305,7 +1299,7 @@ mod tests {
         assert_eq!(
             find_versions,
             Some(super::VersionSpecifier {
-                version: String::from("0.1.0"),
+                versions: vec!["0.1.0".parse()?],
                 source: super::VersionSource::ToolVersion(
                     context.home_dir.path().join(".tool-versions")
                 )
@@ -1327,7 +1321,7 @@ mod tests {
         assert_eq!(
             find_versions,
             Some(super::VersionSpecifier {
-                version: String::from("0.2.0"),
+                versions: vec!["0.2.0".parse()?],
                 source: super::VersionSource::EnvVar(String::from("ASDF_DUMMY_VERSION"))
             })
         );
@@ -1398,7 +1392,7 @@ mod tests {
         assert_eq!(
             find_versions,
             Some(super::VersionSpecifier {
-                version: String::from("0.1.0"),
+                versions: vec!["0.1.0".parse()?],
                 source: super::VersionSource::ToolVersion(default_tool_versions_filename)
             })
         );
@@ -1430,7 +1424,7 @@ mod tests {
         assert_eq!(
             find_versions,
             Some(super::VersionSpecifier {
-                version: String::from(" 0.1.0"),
+                versions: vec![" 0.1.0".parse()?],
                 source: super::VersionSource::Legacy(dummy_version_path)
             })
         );
@@ -1451,7 +1445,7 @@ mod tests {
 
         let preset_version = super::preset_version_for("dummy")?;
 
-        assert_eq!(preset_version, Some(String::from("0.2.0")));
+        assert_eq!(preset_version, Some("0.2.0".parse()?));
 
         Ok(())
     }
@@ -1471,7 +1465,7 @@ mod tests {
 
         let preset_version = super::preset_version_for("dummy")?;
 
-        assert_eq!(preset_version, Some(String::from("0.1.0")));
+        assert_eq!(preset_version, Some("0.1.0".parse()?));
 
         Ok(())
     }
@@ -1490,7 +1484,7 @@ mod tests {
 
         let preset_version = super::preset_version_for("dummy")?;
 
-        assert_eq!(preset_version, Some(String::from("3.0.0")));
+        assert_eq!(preset_version, Some("3.0.0".parse()?));
 
         Ok(())
     }
@@ -1508,7 +1502,7 @@ mod tests {
 
         let preset_version = super::preset_version_for("dummy")?;
 
-        assert_eq!(preset_version, Some(String::from("ref:master")));
+        assert_eq!(preset_version, Some("ref:master".parse()?));
 
         Ok(())
     }
@@ -1528,7 +1522,7 @@ mod tests {
 
         assert_eq!(
             preset_version,
-            Some(String::from("path:/some/place with spaces"))
+            Some("path:/some/place with spaces".parse()?)
         );
 
         Ok(())
@@ -1548,7 +1542,7 @@ mod tests {
                 .join("foo"),
         )?;
 
-        let executable_path = super::executable_path("foo", "system", &PathBuf::from("ls"))?;
+        let executable_path = super::executable_path("foo", &"system".parse()?, &PathBuf::from("ls"))?;
 
         assert_eq!(executable_path, which("ls")?);
 
@@ -1583,7 +1577,7 @@ mod tests {
         );
 
         let executable_path =
-            super::executable_path("foo", "system", &PathBuf::from("dummy_executable"));
+            super::executable_path("foo", &"system".parse()?, &PathBuf::from("dummy_executable"));
 
         assert_eq!(
             executable_path.unwrap_err().to_string(),
@@ -1618,7 +1612,7 @@ mod tests {
         fs::write(&bin_path.join("dummy"), "")?;
         fs::set_permissions(&bin_path.join("dummy"), PermissionsExt::from_mode(0o755))?;
 
-        let executable_path = super::executable_path("foo", "1.0.0", &PathBuf::from("bin/dummy"))?;
+        let executable_path = super::executable_path("foo", &"1.0.0".parse()?, &PathBuf::from("bin/dummy"))?;
 
         assert_eq!(executable_path, bin_path.join("dummy"));
 
@@ -1651,7 +1645,7 @@ mod tests {
         fs::set_permissions(&bin_path.join("dummy"), PermissionsExt::from_mode(0o755))?;
 
         let executable_path =
-            super::executable_path("foo", "ref:master", &PathBuf::from("bin/dummy"))?;
+            super::executable_path("foo", &"ref:master".parse()?, &PathBuf::from("bin/dummy"))?;
 
         assert_eq!(executable_path, bin_path.join("dummy"));
 

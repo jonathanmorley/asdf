@@ -1,3 +1,4 @@
+pub mod current;
 pub mod help;
 pub mod install;
 pub mod latest;

@@ -1,7 +1,9 @@
+use std::fmt::Display;
 use std::{fs, path::PathBuf, str::FromStr};
 use std::collections::HashMap;
 
 use anyhow::{anyhow, Error, Result};
+use itertools::Itertools;
 
 use crate::core::latest::get_latest_version;
 use crate::installs_path;
@@ -26,18 +28,21 @@ impl FromStr for ToolVersions {
                 if uncommented.is_empty() {
                     None
                 } else {
-                    Some(line)
+                    Some(uncommented)
                 }
             })
             .map(|line| {
-                let mut components = line.split(" ");
-                let plugin_name = components.next();
-                let versions = components.map(ToolVersion::from_str).collect::<Result<Vec<_>>>();
-                
-                match (plugin_name, versions) {
-                    (Some(plugin_name), Ok(versions)) => Ok((plugin_name.to_owned(), versions)),
-                    (_, Err(e)) => Err(e),
-                    _ => Err(anyhow!("Cannot parse .tool-versions line: {}", line))
+                if let Some((plugin_name, versions)) = line.split_once(" ") {
+                    // Paths may contain spaces themselves, and so are treated specially.
+                    // They do not allow fallthrough
+                    if versions.starts_with("path:") {
+                        Ok((plugin_name.to_owned(), vec![versions.parse()?]))
+                    } else {
+                        let tool_versions = versions.split_whitespace().map(ToolVersion::from_str).collect::<Result<Vec<_>>>()?;
+                        Ok((plugin_name.to_owned(), tool_versions))
+                    }
+                } else {
+                    Err(anyhow!("Cannot parse .tool-versions line: {}", line))
                 }
             })
             .collect::<Result<HashMap<_, _>>>()?
@@ -45,12 +50,13 @@ impl FromStr for ToolVersions {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum ToolVersion {
     Latest(Option<String>),
-    Version(String),
     Path(PathBuf),
     Ref(String),
+    System,
+    Version(String),
 }
 
 impl FromStr for ToolVersion {
@@ -59,16 +65,29 @@ impl FromStr for ToolVersion {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s.is_empty() {
             Err(anyhow!("Cannot parse empty string as a tool version"))
+        } else if s.eq("system") {
+            Ok(ToolVersion::System)
+        } else if s.starts_with("ref:") {
+            Ok(ToolVersion::Ref(s[4..].to_owned()))
+        } else if s.eq("latest") {
+            Ok(ToolVersion::Latest(None))
+        } else if s.starts_with("latest:") {
+            Ok(ToolVersion::Latest(Some(s[7..].to_owned())))
         } else {
-            if s.starts_with("ref:") {
-                Ok(ToolVersion::Ref(s[4..].to_owned()))
-            } else if s.eq("latest") {
-                Ok(ToolVersion::Latest(None))
-            } else if s.starts_with("latest:") {
-                Ok(ToolVersion::Latest(Some(s[7..].to_owned())))
-            } else {
-                Ok(ToolVersion::Version(s.to_owned()))
-            }
+            Ok(ToolVersion::Version(s.to_owned()))
+        }
+    }
+}
+
+impl Display for ToolVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {    
+            ToolVersion::Latest(Some(version)) => f.write_fmt(format_args!("latest:{version}")),
+            ToolVersion::Latest(None) => f.write_str("latest"),
+            ToolVersion::Path(path) => f.write_fmt(format_args!("path:{}", path.to_string_lossy())),
+            ToolVersion::Ref(sha) => f.write_fmt(format_args!("ref:{sha}")),
+            ToolVersion::System => f.write_str("system"),
+            ToolVersion::Version(version) => f.write_str(version)
         }
     }
 }
@@ -77,9 +96,10 @@ impl ToolVersion {
     pub fn install_type(&self) -> String {
         match self {
             ToolVersion::Latest(_) => "version".to_string(),
-            ToolVersion::Version(_) => "version".to_string(),
             ToolVersion::Path(_) => "path".to_string(),
             ToolVersion::Ref(_) => "ref".to_string(),
+            ToolVersion::System => "system".to_string(),
+            ToolVersion::Version(_) => "version".to_string(),
         }
     }
 
@@ -87,23 +107,25 @@ impl ToolVersion {
         match self {
             ToolVersion::Latest(version) => {
                 get_latest_version(plugin_name, version.as_deref().unwrap_or_default()).map(Some)
-            }
-            ToolVersion::Version(version) => Ok(Some(version.to_string())),
+            },
             ToolVersion::Path(_) => Ok(None),
             ToolVersion::Ref(version) => Ok(Some(version.to_string())),
+            ToolVersion::System => Ok(None),
+            ToolVersion::Version(version) => Ok(Some(version.to_string())),
         }
     }
 
-    pub fn install_path(&self, plugin_name: &str) -> Result<PathBuf> {
+    pub fn install_path(&self, plugin_name: &str) -> Result<Option<PathBuf>> {
         let plugin_dir = installs_path()?.join(plugin_name);
         fs::create_dir_all(&plugin_dir)?;
 
         Ok(match self {
-            ToolVersion::Latest(None) => plugin_dir.join("latest"),
-            ToolVersion::Latest(Some(version)) => plugin_dir.join(version),
-            ToolVersion::Version(version) => plugin_dir.join(version),
-            ToolVersion::Path(path) => path.to_owned(),
-            ToolVersion::Ref(version) => plugin_dir.join(format!("ref-{}", version)),
+            ToolVersion::Latest(None) => Some(plugin_dir.join("latest")),
+            ToolVersion::Latest(Some(version)) => Some(plugin_dir.join(version)),
+            ToolVersion::Path(path) => Some(path.to_owned()),
+            ToolVersion::Ref(version) => Some(plugin_dir.join(format!("ref-{}", version))),
+            ToolVersion::System => None,
+            ToolVersion::Version(version) => Some(plugin_dir.join(version)),
         })
     }
 }
@@ -127,9 +149,9 @@ mod tests {
 
         assert_eq!(
             install_path,
-            tmp_dir.path().join("installs").join("foo").join("1.0.0")
+            Some(tmp_dir.path().join("installs").join("foo").join("1.0.0"))
         );
-        assert!(install_path.parent().unwrap().is_dir());
+        assert!(install_path.unwrap().parent().unwrap().is_dir());
 
         Ok(())
     }

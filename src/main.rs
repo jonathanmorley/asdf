@@ -4,10 +4,13 @@ use crate::commands::{
     help::HelpCommand, install::InstallCommand, latest::LatestCommand, list::ListAllCommand,
     list::ListCommand, reshim::ReshimCommand,
 };
+use commands::current::CurrentCommand;
 use structopt::{paw, StructOpt};
 
 #[derive(StructOpt, Debug)]
 pub enum Command {
+    /// Display current version set or being used
+    Current(CurrentCommand),
     /// Output documentation for plugin and tool
     Help(HelpCommand),
     /// Install package versions
@@ -25,6 +28,7 @@ pub enum Command {
 #[paw::main]
 fn main(args: Command) {
     if let Err(e) = match args {
+        Command::Current(command) => command.run(),
         Command::Help(command) => command.run(),
         Command::Install(command) => command.run(),
         Command::Latest(command) => command.run(),
@@ -32,7 +36,14 @@ fn main(args: Command) {
         Command::ListAll(command) => command.run(),
         Command::Reshim(command) => command.run(),
     } {
-        eprintln!("{}", e);
-        std::process::exit(1);
+        match e.to_string().as_str() {
+            "No plugin version set" => {
+                std::process::exit(126);
+            },
+            _ => {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+        }
     }
 }

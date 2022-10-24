@@ -105,6 +105,8 @@ teardown() {
 dummy           1.1.0           $PROJECT_DIR/.tool-versions
 foobar          1.0.0           $PROJECT_DIR/.tool-versions"
 
+
+  echo "$output"
   [ "$expected" = "$output" ]
 }
 
@@ -139,6 +141,7 @@ foobar          1.0.0           $PROJECT_DIR/.tool-versions"
   expected="dummy           1.2.0           $PROJECT_DIR/.tool-versions"
 
   run asdf current "dummy"
+  echo "$output"
   [ "$status" -eq 0 ]
   [ "$output" = "$expected" ]
 }

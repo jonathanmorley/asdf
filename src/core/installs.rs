@@ -1,7 +1,7 @@
 use crate::{
     asdf_config_value, asdf_run_hook, call, core::reshim::reshim_plugin, download_path,
     find_versions, find_tool_versions, install_path, list_installed_plugins, plugin_exists, plugin_path,
-    tool_versions::{ToolVersion, self}, VersionSpecifier, parse_tool_versions_file,
+    tool_versions::ToolVersion, VersionSpecifier, parse_tool_versions_file,
 };
 use anyhow::{anyhow, Result};
 use itertools::Itertools;
@@ -17,8 +17,8 @@ pub fn install_one_local_tool(plugin_name: &str) -> Result<()> {
 
     let plugin_version_and_path = find_versions(plugin_name, &search_path)?;
 
-    if let Some(VersionSpecifier { version, .. }) = plugin_version_and_path {
-        install_tool_version(plugin_name, &version, false)
+    if let Some(VersionSpecifier { versions, .. }) = plugin_version_and_path {
+        install_tool_version(plugin_name, &versions[0], false)
     } else {
         Err(anyhow!("No versions specified for {} in config files or environment", plugin_name))
     }
@@ -55,8 +55,8 @@ pub fn install_local_tool_versions() -> Result<()> {
     for plugin in plugins {
         if let Some(plugin_versions) = find_versions(&plugin, &search_path)? {
             some_tools_installed = true;
-            for plugin_version in plugin_versions.version.split(' ') {
-                install_tool_version(&plugin, plugin_version, false)?;
+            for plugin_version in plugin_versions.versions {
+                install_tool_version(&plugin, &plugin_version, false)?;
             }
         }
     }
@@ -70,17 +70,16 @@ pub fn install_local_tool_versions() -> Result<()> {
 
 pub fn install_tool_version(
     plugin_name: &str,
-    full_version: &str,
+    tool_version: &ToolVersion,
     keep_download: bool,
 ) -> Result<()> {
     let plugin_path = plugin_path(plugin_name)?;
     plugin_exists(plugin_name)?;
 
-    if full_version == "system" {
+    if let ToolVersion::System = tool_version {
         return Ok(());
     }
 
-    let tool_version: ToolVersion = full_version.parse()?;
     let install_type = tool_version.install_type();
     let version = tool_version.install_version(plugin_name)?.unwrap();
 
@@ -91,7 +90,7 @@ pub fn install_tool_version(
     // trap 'handle_cancel $install_path' INT
 
     if install_path.is_dir() {
-        println!("{} {} is already installed", plugin_name, full_version);
+        println!("{} {} is already installed", plugin_name, tool_version);
         return Ok(());
     }
 
@@ -103,13 +102,13 @@ pub fn install_tool_version(
 
         asdf_run_hook(
             &format!("pre_asdf_install_{}", plugin_name),
-            &[full_version],
+            &[&tool_version.to_string()],
             vec![
                 ("concurrency", OsStr::new(&concurrency.to_string())),
                 ("download_path", download_path.clone().unwrap().as_os_str()),
                 ("install_path", install_path.as_os_str()),
                 ("version", OsStr::new(&version)),
-                ("full_version", OsStr::new(&full_version)),
+                ("full_version", OsStr::new(&tool_version.to_string())),
                 ("install_type", OsStr::new(&install_type)),
                 (
                     "keep_download",
@@ -155,11 +154,11 @@ pub fn install_tool_version(
         fs::remove_dir_all(download_path.clone().unwrap())?;
     }
 
-    reshim_plugin(plugin_name, Some(full_version))?;
+    reshim_plugin(plugin_name, Some(&tool_version.to_string()))?;
 
     asdf_run_hook(
         &format!("post_asdf_install_{}", plugin_name),
-        &[full_version],
+        &[&tool_version.to_string()],
         vec![
             (
                 "always_keep_download",
@@ -171,7 +170,7 @@ pub fn install_tool_version(
             ("download_path", download_path.clone().unwrap().as_os_str()),
             ("install_path", install_path.as_os_str()),
             ("version", OsStr::new(&version)),
-            ("full_version", OsStr::new(&full_version)),
+            ("full_version", OsStr::new(&tool_version.to_string())),
             ("install_type", OsStr::new(&install_type)),
             (
                 "keep_download",
