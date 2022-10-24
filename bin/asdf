@@ -27,7 +27,7 @@ find_asdf_cmd() {
   asdf_cmd_dir="$(asdf_dir)/lib/commands"
   asdf_bin_dir="$(asdf_dir)/target/debug"
   case "$1" in
-  'exec' | 'current' | 'env' | 'global' | 'latest' | 'local' | \
+  'exec' | 'current' | 'env' | 'global' | 'local' | \
     'reshim' | 'uninstall' | 'update' | 'where' | 'which' | \
     'export-shell-version')
     printf "%s %s\\n" "$asdf_cmd_dir/command-$1.bash" 2
@@ -37,7 +37,7 @@ find_asdf_cmd() {
     printf "%s %s\\n" "$asdf_cmd_dir/command-help.bash" 2
     ;;
 
-  'install' | '--version' | 'version')
+  'install' | 'latest' | '--version' | 'version')
     printf "%s %s\\n" "$asdf_bin_dir/asdr" 1
     ;;
 
